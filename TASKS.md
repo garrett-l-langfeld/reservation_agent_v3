@@ -29,6 +29,9 @@ Define request schema:
 - date
 - time OR time_range
 - party_size
+- user_name
+- user_email
+- user_phone
 
 ### Task 2.2
 Define response schema:
@@ -68,6 +71,8 @@ Validate:
 - required fields
 - valid date/time
 - party size
+- email format
+- phone format
 
 ### Task 5.2
 Normalize:

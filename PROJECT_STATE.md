@@ -32,11 +32,11 @@ Task 1.1 — Create project brief
 - Autobooking: YES (best-effort)
 - Fallback: YES (handoff)
 - CAPTCHA: user-assisted
+- Required booking info: user name, email, and phone
 
 ---
 
 ## Open Questions
-- What user info is required for booking? (name, email, phone)
 - How should CAPTCHA UX work? (CLI pause vs browser handoff)
 - Retry strategy for failed bookings?
 

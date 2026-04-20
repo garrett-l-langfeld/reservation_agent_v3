@@ -18,6 +18,9 @@ Given:
 - date
 - time or time range
 - party size
+- user name
+- user email
+- user phone
 
 The system should:
 1. Find the restaurant on Resy
@@ -53,12 +56,15 @@ The system should:
 
 ### 4.1 Request Intake
 Parses structured user input into a normalized format.
+Includes required booking contact fields: name, email, and phone.
 
 ### 4.2 Validation
 Ensures:
 - valid date/time
 - valid party size
 - required fields present
+- valid email format
+- valid phone format
 
 ### 4.3 Platform Adapter (Resy)
 Responsible for:
