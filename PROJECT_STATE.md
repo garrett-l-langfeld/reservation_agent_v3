@@ -1,41 +1,49 @@
-# Project State
+# Reservation Agent — Project State
 
-Update this file after each meaningful milestone so new Codex threads can start with a short, stable summary.
+## Current Status
+NOT STARTED
 
-## Project summary
+---
 
-Replace this text with a 3-5 sentence overview of your project.
+## Current Phase
+Phase 1 — Project Definition
 
-## Current stack
+---
 
-- Language:
-- Framework:
-- Package manager:
-- Test command:
-- Run command:
+## Completed Phases
+- None
 
-## Current status
+---
 
-- What is working:
-- What is partially working:
-- What is blocked:
+## Next Task
+Task 1.1 — Create project brief
 
-## Current priorities
+---
 
-1. 
-2. 
-3. 
+## Known Risks
+- Resy anti-bot / CAPTCHA
+- Booking flow fragility
+- UI changes
 
-## Known constraints
+---
 
-- Keep setup simple
-- Favor low-maintenance solutions
-- Minimize dependencies unless necessary
+## Key Decisions
+- Platform: Resy
+- Autobooking: YES (best-effort)
+- Fallback: YES (handoff)
+- CAPTCHA: user-assisted
 
-## Decisions made
+---
 
-- Example: We are using a simple file-based store before adding a database.
+## Open Questions
+- What user info is required for booking? (name, email, phone)
+- How should CAPTCHA UX work? (CLI pause vs browser handoff)
+- Retry strategy for failed bookings?
 
-## Next recommended prompt for Codex
+---
 
-“Read `README.md`, `AGENTS.md`, and `PROJECT_STATE.md`. Then help me with [one specific task]. Do not modify unrelated files.”
+## Notes for Codex
+- Do not expand scope
+- Do not introduce heavy frameworks
+- Keep everything modular and simple
+- Ask for clarification if uncertain
