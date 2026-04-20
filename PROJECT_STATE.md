@@ -1,22 +1,31 @@
 # Reservation Agent — Project State
 
 ## Current Status
-NOT STARTED
+IN PROGRESS (MVP CORE COMPLETE)
 
 ---
 
 ## Current Phase
-Phase 1 — Project Definition
+Phase 10 — Testing (Completed)
 
 ---
 
 ## Completed Phases
-- None
+- Phase 1 — Project Definition
+- Phase 2 — Input / Output Contract
+- Phase 3 — Platform Adapter Interface
+- Phase 4 — Mock Adapter
+- Phase 5 — Validation
+- Phase 6 — Slot Selection
+- Phase 7 — Orchestrator
+- Phase 8 — Resy Integration
+- Phase 9 — Logging
+- Phase 10 — Testing
 
 ---
 
 ## Next Task
-Task 1.1 — Create project brief
+Prepare for production hardening of real browser automation and anti-bot resilience (CLI entrypoint now available for local end-to-end runs)
 
 ---
 
@@ -33,6 +42,7 @@ Task 1.1 — Create project brief
 - Fallback: YES (handoff)
 - CAPTCHA: user-assisted
 - Required booking info: user name, email, and phone
+- Added minimal CLI for orchestrator execution via `src/main.py` with `--request-json` or `--request-file`
 
 ---
 
