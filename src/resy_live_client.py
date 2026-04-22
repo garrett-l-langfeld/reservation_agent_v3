@@ -145,6 +145,95 @@ class ResyLiveClient:
             page.wait_for_timeout(2500)
             page = _switch_to_new_booking_page_if_present(page)
             post_click_url = str(getattr(page, "url", ""))
+            transition_polls: list[dict[str, Any]] = []
+            post_click_retries: list[dict[str, Any]] = []
+            reserve_now_attempts: list[dict[str, Any]] = []
+            post_click_state = _collect_checkout_state(page)
+            for poll_index in range(1, 7):
+                reserve_now = _click_reserve_now_modal_button(page)
+                reserve_now_attempts.append({"poll_index": poll_index, **reserve_now})
+                if reserve_now.get("clicked"):
+                    page.wait_for_timeout(1_000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=1_500)
+                    except Exception:
+                        pass
+                    page = _switch_to_new_booking_page_if_present(page)
+                post_click_url = str(getattr(page, "url", ""))
+                post_click_state = _collect_checkout_state(page)
+                transition_polls.append(
+                    {
+                        "poll_index": poll_index,
+                        "url": post_click_url,
+                        "state": post_click_state,
+                    }
+                )
+                if (
+                    _page_looks_confirmed(page)
+                    or _page_looks_like_captcha(page)
+                    or _page_looks_checkout_opened(page)
+                    or _checkout_state_indicates_opened(post_click_state)
+                ):
+                    break
+                try:
+                    page.wait_for_load_state("networkidle", timeout=1_500)
+                except Exception:
+                    pass
+                page.wait_for_timeout(700)
+                page = _switch_to_new_booking_page_if_present(page)
+
+            if not (
+                _page_looks_confirmed(page)
+                or _page_looks_like_captcha(page)
+                or _page_looks_checkout_opened(page)
+                or _checkout_state_indicates_opened(post_click_state)
+            ):
+                for retry_index in range(1, 3):
+                    _maybe_expand_all_times(page)
+                    retry_click = _click_slot_button_once(page, slot_time)
+                    retry_entry = {
+                        "retry_index": retry_index,
+                        "click": retry_click.diagnostics,
+                        "clicked": retry_click.clicked,
+                        "reserve_now_attempts": [],
+                        "polls": [],
+                    }
+                    post_click_retries.append(retry_entry)
+                    if not retry_click.clicked:
+                        continue
+                    page.wait_for_timeout(1_500)
+                    for poll_index in range(1, 5):
+                        retry_reserve_now = _click_reserve_now_modal_button(page)
+                        retry_entry["reserve_now_attempts"].append(
+                            {"poll_index": poll_index, **retry_reserve_now}
+                        )
+                        if retry_reserve_now.get("clicked"):
+                            page.wait_for_timeout(1_000)
+                        page = _switch_to_new_booking_page_if_present(page)
+                        post_click_url = str(getattr(page, "url", ""))
+                        post_click_state = _collect_checkout_state(page)
+                        retry_entry["polls"].append(
+                            {
+                                "poll_index": poll_index,
+                                "url": post_click_url,
+                                "state": post_click_state,
+                            }
+                        )
+                        if (
+                            _page_looks_confirmed(page)
+                            or _page_looks_like_captcha(page)
+                            or _page_looks_checkout_opened(page)
+                            or _checkout_state_indicates_opened(post_click_state)
+                        ):
+                            break
+                        page.wait_for_timeout(700)
+                    if (
+                        _page_looks_confirmed(page)
+                        or _page_looks_like_captcha(page)
+                        or _page_looks_checkout_opened(page)
+                        or _checkout_state_indicates_opened(post_click_state)
+                    ):
+                        break
 
             if _page_looks_like_captcha(page):
                 return {
@@ -159,32 +248,56 @@ class ResyLiveClient:
                     "confirmation_code": _extract_confirmation_code(page.content()),
                 }
 
-            if _page_looks_checkout_opened(page):
-                checkout_debug = _attempt_checkout_autofill_and_submit(page, user_details)
-                page.wait_for_timeout(2_000)
+            if _page_looks_checkout_opened(page) or _checkout_state_indicates_opened(post_click_state):
+                checkout_steps: list[dict[str, Any]] = []
+                for step_index in range(1, 4):
+                    step_before = _collect_checkout_state(page)
+                    checkout_action = _attempt_checkout_autofill_and_submit(page, user_details)
+                    page.wait_for_timeout(1_500)
+                    page = _switch_to_new_booking_page_if_present(page)
+                    step_after = _collect_checkout_state(page)
+                    checkout_steps.append(
+                        {
+                            "step_index": step_index,
+                            "before": step_before,
+                            "action": checkout_action,
+                            "after": step_after,
+                        }
+                    )
 
-                if _page_looks_like_captcha(page):
-                    return {
-                        "status": "captcha_required",
-                        "prompt": "Complete CAPTCHA in browser and resume booking.",
-                        "resume_token": _encode_resume_payload(ResumePayload(url=page.url, slot_time=slot_time)),
-                    }
+                    if _page_looks_like_captcha(page):
+                        return {
+                            "status": "captcha_required",
+                            "prompt": "Complete CAPTCHA in browser and resume booking.",
+                            "resume_token": _encode_resume_payload(
+                                ResumePayload(url=str(getattr(page, "url", post_click_url)), slot_time=slot_time)
+                            ),
+                        }
 
-                if _page_looks_confirmed(page):
-                    return {
-                        "status": "success",
-                        "confirmation_code": _extract_confirmation_code(page.content()),
-                    }
+                    if _page_looks_confirmed(page):
+                        return {
+                            "status": "success",
+                            "confirmation_code": _extract_confirmation_code(page.content()),
+                        }
+
+                    if not checkout_action["clicked_buttons"] and not any(checkout_action["autofill"].values()):
+                        break
 
                 return {
                     "status": "checkout_opened",
                     "prompt": "Booking details opened. Complete remaining checkout steps in browser and resume.",
-                    "resume_token": _encode_resume_payload(ResumePayload(url=page.url, slot_time=slot_time)),
+                    "resume_token": _encode_resume_payload(
+                        ResumePayload(url=str(getattr(page, "url", post_click_url)), slot_time=slot_time)
+                    ),
                     "debug": {
                         **click_attempt.diagnostics,
-                        "checkout_action": checkout_debug,
+                        "checkout_state": _collect_checkout_state(page),
+                        "checkout_steps": checkout_steps,
                         "pre_click_url": pre_click_url,
                         "post_click_url": str(getattr(page, "url", "")),
+                        "transition_polls": transition_polls,
+                        "post_click_retries": post_click_retries,
+                        "reserve_now_attempts": reserve_now_attempts,
                     },
                 }
 
@@ -192,14 +305,18 @@ class ResyLiveClient:
                 "status": "checkout_opened",
                 "prompt": "Slot selected. Complete remaining checkout steps in browser and resume.",
                 "resume_token": _encode_resume_payload(ResumePayload(url=page.url, slot_time=slot_time)),
-                "debug": {
-                    **click_attempt.diagnostics,
-                    "reason": "post_click_not_confirmed",
-                    "pre_click_url": pre_click_url,
-                    "post_click_url": post_click_url,
-                    "url_changed_after_click": pre_click_url != post_click_url,
-                },
-            }
+                    "debug": {
+                        **click_attempt.diagnostics,
+                        "reason": "post_click_not_confirmed",
+                        "pre_click_url": pre_click_url,
+                        "post_click_url": post_click_url,
+                        "url_changed_after_click": pre_click_url != post_click_url,
+                        "post_click_state": post_click_state,
+                        "transition_polls": transition_polls,
+                        "post_click_retries": post_click_retries,
+                        "reserve_now_attempts": reserve_now_attempts,
+                    },
+                }
 
     def build_handoff_url(
         self,
@@ -227,23 +344,27 @@ class ResyLiveClient:
         payload = _decode_resume_payload(resume_token)
         if payload is None:
             return {"status": "failure", "reason": "invalid_resume_token"}
+        page = self._existing_page_for_resume(payload.url)
+        if page is not None:
+            return _resume_result_from_page(page, payload)
 
-        with self._open_page(payload.url) as page:
-            page.wait_for_timeout(2500)
+        with self._open_page(payload.url) as opened_page:
+            return _resume_result_from_page(opened_page, payload)
 
-            if _page_looks_like_captcha(page):
-                return {
-                    "status": "failure",
-                    "reason": "captcha_pending",
-                }
+    def _existing_page_for_resume(self, url: str) -> Any | None:
+        if not self.reuse_browser_session or self._page is None:
+            return None
 
-            if _page_looks_confirmed(page):
-                return {
-                    "status": "success",
-                    "confirmation_code": _extract_confirmation_code(page.content()),
-                }
-
-        return {"status": "failure", "reason": "resume_failed"}
+        try:
+            if self._page.is_closed():
+                return None
+            page = _switch_to_new_booking_page_if_present(self._page)
+            current_url = str(getattr(page, "url", "")).strip()
+            if not current_url or current_url == "about:blank":
+                page.goto(url, wait_until="domcontentloaded")
+            return page
+        except Exception:
+            return None
 
     def _open_page(self, url: str):
         if self.reuse_browser_session:
@@ -943,6 +1064,8 @@ def _page_looks_checkout_opened(page: Any) -> bool:
                       "booking details",
                       "contact information",
                       "payment",
+                      "reserve now",
+                      "cancellation policy",
                     ];
                     if (strongPhrases.some((phrase) => body.includes(phrase))) {
                       return true;
@@ -971,13 +1094,299 @@ def _page_looks_checkout_opened(page: Any) -> bool:
         return False
 
 
+def _collect_checkout_state(page: Any) -> dict[str, Any]:
+    try:
+        snapshot = page.evaluate(
+            """
+            () => {
+                const body = (document.body?.innerText || "").toLowerCase();
+                const checkoutPhrases = [
+                  "complete your reservation",
+                  "reservation details",
+                  "confirm reservation",
+                  "booking details",
+                  "contact information",
+                  "payment",
+                  "reserve now",
+                  "cancellation policy",
+                ];
+                const visibility = (node) => {
+                  if (!(node instanceof HTMLElement)) return false;
+                  if (node.getClientRects().length === 0) return false;
+                  const style = window.getComputedStyle(node);
+                  return style.visibility !== "hidden" && style.display !== "none";
+                };
+                const hasVisibleCheckoutContainer = Array.from(
+                  document.querySelectorAll(
+                    "[role='dialog'], [aria-modal='true'], [data-test-id*='checkout'], [data-testid*='checkout'], [class*='checkout'], [class*='Checkout'], [class*='drawer'], [class*='Drawer']"
+                  )
+                ).some((node) => visibility(node));
+                const buttonData = Array.from(
+                  document.querySelectorAll("button, [role='button'], input[type='submit']")
+                )
+                  .map((node) => {
+                    const text =
+                      (node instanceof HTMLInputElement ? node.value : node.textContent || "").replace(/\\s+/g, " ").trim();
+                    if (!text) return null;
+                    const lowered = text.toLowerCase();
+                    if (
+                      !(
+                        lowered.includes("continue") ||
+                        lowered.includes("confirm") ||
+                        lowered.includes("reserve") ||
+                        lowered.includes("book") ||
+                        lowered.includes("payment") ||
+                        lowered.includes("checkout")
+                      )
+                    ) {
+                      return null;
+                    }
+                    return {
+                      text,
+                      visible: visibility(node),
+                      disabled:
+                        node.hasAttribute("disabled") ||
+                        node.getAttribute("aria-disabled") === "true",
+                    };
+                  })
+                  .filter(Boolean)
+                  .slice(0, 8);
+                const readField = (selectors) => {
+                  for (const selector of selectors) {
+                    const node = document.querySelector(selector);
+                    if (!(node instanceof HTMLInputElement) && !(node instanceof HTMLTextAreaElement)) continue;
+                    return {
+                      present: true,
+                      visible: visibility(node),
+                      filled: Boolean((node.value || "").trim()),
+                      required: node.required || node.getAttribute("aria-required") === "true",
+                    };
+                  }
+                  return { present: false, visible: false, filled: false, required: false };
+                };
+                const errors = Array.from(
+                  document.querySelectorAll(
+                    "[aria-invalid='true'], [role='alert'], .error, .Error, [data-test-id*='error'], [data-testid*='error']"
+                  )
+                )
+                  .map((node) => (node.textContent || "").replace(/\\s+/g, " ").trim())
+                  .filter(Boolean)
+                  .slice(0, 8);
+                const resourceEntries = performance
+                  .getEntriesByType("resource")
+                  .filter((entry) => {
+                    const initiator = (entry.initiatorType || "").toLowerCase();
+                    return initiator === "fetch" || initiator === "xmlhttprequest";
+                  });
+                return {
+                  url: window.location.href,
+                  has_checkout_phrase: checkoutPhrases.some((phrase) => body.includes(phrase)),
+                  has_checkout_container: hasVisibleCheckoutContainer,
+                  checkout_buttons: buttonData,
+                  checkout_button_count: buttonData.length,
+                  fields: {
+                    name: readField(["input[autocomplete='name']", "input[name*='name' i]", "input[id*='name' i]"]),
+                    email: readField(["input[type='email']", "input[name*='email' i]", "input[id*='email' i]"]),
+                    phone: readField(["input[type='tel']", "input[name*='phone' i]", "input[id*='phone' i]"]),
+                  },
+                  validation_errors: errors,
+                  network: {
+                    xhr_fetch_count: resourceEntries.length,
+                    recent_requests: resourceEntries.slice(-5).map((entry) => ({
+                      initiator: entry.initiatorType || "",
+                      duration_ms: Math.round(entry.duration || 0),
+                      name: (entry.name || "").slice(0, 140),
+                    })),
+                  },
+                };
+            }
+            """
+        )
+    except Exception:
+        return {
+            "snapshot_error": True,
+            "url": str(getattr(page, "url", "")),
+        }
+    return snapshot if isinstance(snapshot, dict) else {"snapshot_error": True}
+
+
+def _checkout_state_indicates_opened(state: dict[str, Any]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    if state.get("has_checkout_phrase") or state.get("has_checkout_container"):
+        return True
+
+    if state.get("checkout_button_count", 0):
+        return True
+
+    fields = state.get("fields")
+    if not isinstance(fields, dict):
+        return False
+
+    for key in ("email", "phone", "name"):
+        field = fields.get(key)
+        if isinstance(field, dict) and field.get("present"):
+            return True
+    return False
+
+
+def _click_reserve_now_modal_button(page: Any) -> dict[str, Any]:
+    selectors = [
+        ("role_button_exact_reserve_now", lambda: page.get_by_role("button", name=re.compile(r"^\s*reserve now\s*$", re.IGNORECASE)).first),
+        ("role_button_contains_reserve_now", lambda: page.get_by_role("button", name=re.compile(r"reserve now", re.IGNORECASE)).first),
+        ("css_button_text_reserve_now", lambda: page.locator("button:has-text('Reserve Now')").first),
+        ("css_modal_button_reserve_now", lambda: page.locator("[role='dialog'] button:has-text('Reserve Now'), [aria-modal='true'] button:has-text('Reserve Now')").first),
+    ]
+    attempted: list[str] = []
+    for selector_name, locator_factory in selectors:
+        attempted.append(selector_name)
+        try:
+            locator = locator_factory()
+            if locator.count() == 0:
+                continue
+            if not locator.is_visible():
+                continue
+            try:
+                if hasattr(locator, "is_enabled") and not locator.is_enabled():
+                    continue
+            except Exception:
+                pass
+            label = ""
+            try:
+                label = str(locator.inner_text(timeout=800)).strip()
+            except Exception:
+                label = ""
+            locator.click(timeout=2_500)
+            return {
+                "clicked": True,
+                "clicked_via": selector_name,
+                "clicked_text": label,
+                "attempted_selectors": attempted,
+            }
+        except Exception as error:
+            attempted.append(f"{selector_name}_error:{error.__class__.__name__}")
+
+    try:
+        fallback = page.evaluate(
+            """
+            () => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const isVisible = (node) => {
+                  if (!(node instanceof HTMLElement)) return false;
+                  if (node.getClientRects().length === 0) return false;
+                  const style = window.getComputedStyle(node);
+                  return style.display !== "none" && style.visibility !== "hidden";
+                };
+                const clickNode = (node) => {
+                  node.scrollIntoView({ block: "center", inline: "center" });
+                  try {
+                    node.click();
+                  } catch (error) {
+                    const events = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+                    for (const type of events) {
+                      node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+                    }
+                  }
+                };
+                const selectors = [
+                  "button",
+                  "[role='button']",
+                  "a",
+                  "[data-test-id*='reserve']",
+                  "[data-testid*='reserve']",
+                  "[class*='reserve']",
+                ];
+                const seen = new WeakSet();
+                for (const selector of selectors) {
+                  for (const node of document.querySelectorAll(selector)) {
+                    if (!(node instanceof HTMLElement)) continue;
+                    if (seen.has(node)) continue;
+                    seen.add(node);
+                    if (!isVisible(node)) continue;
+                    const text = normalize(node.innerText || node.textContent || "");
+                    const aria = normalize(node.getAttribute("aria-label") || "");
+                    const value = normalize(node instanceof HTMLInputElement ? node.value : "");
+                    if (text !== "reserve now" && !text.includes("reserve now") && aria !== "reserve now" && value !== "reserve now") {
+                      continue;
+                    }
+                    clickNode(node);
+                    return {
+                      clicked: true,
+                      clicked_via: "evaluate_text_scan_reserve_now",
+                      clicked_text: (node.innerText || node.textContent || node.getAttribute("aria-label") || "").trim(),
+                    };
+                  }
+                }
+                return { clicked: false };
+            }
+            """
+        )
+        if isinstance(fallback, dict) and fallback.get("clicked"):
+            return {
+                "clicked": True,
+                "clicked_via": fallback.get("clicked_via", "evaluate_text_scan_reserve_now"),
+                "clicked_text": fallback.get("clicked_text", ""),
+                "attempted_selectors": attempted + ["evaluate_text_scan_reserve_now"],
+            }
+        attempted.append("evaluate_text_scan_reserve_now")
+    except Exception as error:
+        attempted.append(f"evaluate_text_scan_reserve_now_error:{error.__class__.__name__}")
+
+    try:
+        for frame in list(page.frames)[1:]:
+            for selector_name, locator_factory in [
+                (
+                    "frame_role_button_exact_reserve_now",
+                    lambda: frame.get_by_role(
+                        "button",
+                        name=re.compile(r"^\s*reserve now\s*$", re.IGNORECASE),
+                    ).first,
+                ),
+                (
+                    "frame_css_button_text_reserve_now",
+                    lambda: frame.locator("button:has-text('Reserve Now'), [role='button']:has-text('Reserve Now')").first,
+                ),
+            ]:
+                attempted.append(selector_name)
+                try:
+                    locator = locator_factory()
+                    if locator.count() == 0:
+                        continue
+                    if not locator.is_visible():
+                        continue
+                    locator.click(timeout=2_500)
+                    return {
+                        "clicked": True,
+                        "clicked_via": selector_name,
+                        "clicked_text": "Reserve Now",
+                        "frame_url": str(getattr(frame, "url", "")),
+                        "attempted_selectors": attempted,
+                    }
+                except Exception as error:
+                    attempted.append(f"{selector_name}_error:{error.__class__.__name__}")
+    except Exception as error:
+        attempted.append(f"frame_scan_error:{error.__class__.__name__}")
+
+    return {
+        "clicked": False,
+        "attempted_selectors": attempted,
+    }
+
+
 def _attempt_checkout_autofill_and_submit(page: Any, user_details: dict[str, Any]) -> dict[str, Any]:
     name = str(user_details.get("name") or "").strip()
     email = str(user_details.get("email") or "").strip()
     phone = str(user_details.get("phone") or "").strip()
+    name_parts = name.split()
+    first_name = name_parts[0] if name_parts else ""
+    last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
-    filled = {"name": False, "email": False, "phone": False}
+    filled = {"name": False, "first_name": False, "last_name": False, "email": False, "phone": False}
     clicks: list[str] = []
+    reserve_now_click = _click_reserve_now_modal_button(page)
+    if reserve_now_click.get("clicked"):
+        clicks.append("reserve_now_modal")
+        page.wait_for_timeout(800)
 
     def _fill_first(selectors: list[str], value: str, key: str) -> None:
         if not value:
@@ -995,6 +1404,24 @@ def _attempt_checkout_autofill_and_submit(page: Any, user_details: dict[str, Any
             except Exception:
                 continue
 
+    _fill_first(
+        [
+            "input[autocomplete='given-name']",
+            "input[name*='first' i]",
+            "input[id*='first' i]",
+        ],
+        first_name,
+        "first_name",
+    )
+    _fill_first(
+        [
+            "input[autocomplete='family-name']",
+            "input[name*='last' i]",
+            "input[id*='last' i]",
+        ],
+        last_name,
+        "last_name",
+    )
     _fill_first(
         [
             "input[autocomplete='name']",
@@ -1026,8 +1453,8 @@ def _attempt_checkout_autofill_and_submit(page: Any, user_details: dict[str, Any
     )
 
     for pattern, label in [
-        (r"continue", "continue"),
-        (r"confirm|reserve|book now|complete", "confirm_or_book"),
+        (r"continue|next|proceed|review", "continue"),
+        (r"confirm|reserve|book now|complete|submit|place", "confirm_or_book"),
     ]:
         try:
             button = page.get_by_role("button", name=re.compile(pattern, re.IGNORECASE)).first
@@ -1040,9 +1467,53 @@ def _attempt_checkout_autofill_and_submit(page: Any, user_details: dict[str, Any
         except Exception:
             continue
 
+    try:
+        submit = page.locator("button[type='submit'], input[type='submit']").first
+        if submit.count() > 0 and submit.is_visible():
+            submit.click(timeout=2_000)
+            clicks.append("submit")
+            page.wait_for_timeout(1_000)
+    except Exception:
+        pass
+
     return {
         "autofill": filled,
         "clicked_buttons": clicks,
+        "reserve_now_click": reserve_now_click,
+    }
+
+
+def _resume_result_from_page(page: Any, payload: ResumePayload) -> dict[str, Any]:
+    page.wait_for_timeout(2_000)
+    page = _switch_to_new_booking_page_if_present(page)
+
+    if _page_looks_like_captcha(page):
+        return {
+            "status": "failure",
+            "reason": "captcha_pending",
+        }
+
+    if _page_looks_confirmed(page):
+        return {
+            "status": "success",
+            "confirmation_code": _extract_confirmation_code(page.content()),
+        }
+
+    checkout_state = _collect_checkout_state(page)
+    if _page_looks_checkout_opened(page) or _checkout_state_indicates_opened(checkout_state):
+        return {
+            "status": "checkout_opened",
+            "prompt": "Checkout is still open. Complete remaining steps in browser and resume.",
+            "resume_token": _encode_resume_payload(
+                ResumePayload(url=str(getattr(page, "url", payload.url)), slot_time=payload.slot_time)
+            ),
+            "debug": {"checkout_state": checkout_state},
+        }
+
+    return {
+        "status": "failure",
+        "reason": "resume_failed",
+        "debug": {"checkout_state": checkout_state},
     }
 
 

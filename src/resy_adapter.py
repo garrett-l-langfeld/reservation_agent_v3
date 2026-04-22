@@ -172,10 +172,30 @@ class ResyAdapter(PlatformAdapter):
                 "status": "success",
                 "confirmation_code": result.get("confirmation_code"),
             }
+        if status in {"checkout_opened", "user_action_required"}:
+            return {
+                "status": "user_action_required",
+                "reason": "checkout_opened",
+                "prompt": result.get(
+                    "prompt",
+                    "Checkout is open. Complete remaining steps in browser and resume.",
+                ),
+                "resume_token": result.get("resume_token"),
+                "debug": result.get("debug"),
+            }
+        if status in {"captcha", "captcha_required"}:
+            return {
+                "status": "captcha_required",
+                "reason": "captcha_required",
+                "prompt": result.get("prompt", "Complete CAPTCHA and resume booking."),
+                "resume_token": result.get("resume_token"),
+                "debug": result.get("debug"),
+            }
 
         return {
             "status": "failure",
             "reason": result.get("reason", "resume_failed"),
+            "debug": result.get("debug"),
         }
 
 

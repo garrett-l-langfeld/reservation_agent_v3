@@ -190,6 +190,29 @@ def test_process_reservation_handles_checkout_opened_as_user_action_required():
     assert result["booking_debug"] == {"clicked_via": "role_button_contains"}
 
 
+def test_resume_captcha_booking_surfaces_checkout_opened_as_user_action():
+    class ResumeCheckoutAdapter(MockResyAdapter):
+        def resume_booking(self, resume_token: str) -> dict:  # type: ignore[override]
+            assert resume_token == "resume-123"
+            return {
+                "status": "user_action_required",
+                "reason": "checkout_opened",
+                "prompt": "Continue checkout in browser",
+                "resume_token": "resume-456",
+                "debug": {"checkout_state": {"checkout_button_count": 1}},
+            }
+
+    result = resume_captcha_booking(ResumeCheckoutAdapter(), "resume-123")
+
+    assert result == {
+        "status": "requires_user_action",
+        "reason": "checkout_opened",
+        "prompt": "Continue checkout in browser",
+        "resume_token": "resume-456",
+        "booking_debug": {"checkout_state": {"checkout_button_count": 1}},
+    }
+
+
 def test_process_reservation_emits_required_logs(caplog: pytest.LogCaptureFixture):
     caplog.set_level("INFO")
 

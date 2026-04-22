@@ -217,10 +217,22 @@ def resume_captcha_booking(
             "confirmation_status": "confirmed",
             "confirmation_details": result.get("confirmation_code"),
         }
+    if result.get("status") in {"captcha_required", "user_action_required"}:
+        reason = result.get("reason")
+        if not isinstance(reason, str):
+            reason = "captcha_required" if result.get("status") == "captcha_required" else "checkout_opened"
+        return {
+            "status": "requires_user_action",
+            "reason": reason,
+            "prompt": result.get("prompt", "Complete required browser steps and resume."),
+            "resume_token": result.get("resume_token", resume_token),
+            "booking_debug": result.get("debug"),
+        }
 
     return {
         "status": "failure",
         "reason": result.get("reason", "resume_failed"),
+        "booking_debug": result.get("debug"),
         "alternative_times": [],
         "handoff_link": None,
     }

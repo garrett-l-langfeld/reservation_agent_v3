@@ -93,6 +93,45 @@ def test_resy_adapter_resume_booking_success():
     assert result["confirmation_code"] == "RSY-2"
 
 
+def test_resy_adapter_resume_booking_checkout_opened_maps_to_user_action():
+    client = FakeResyClient()
+    client.resume_response = {
+        "status": "checkout_opened",
+        "prompt": "Checkout still open",
+        "resume_token": "resume-next",
+        "debug": {"checkout_state": {"checkout_button_count": 1}},
+    }
+    adapter = ResyAdapter(client)
+
+    result = adapter.resume_booking("resume-token")
+
+    assert result == {
+        "status": "user_action_required",
+        "reason": "checkout_opened",
+        "prompt": "Checkout still open",
+        "resume_token": "resume-next",
+        "debug": {"checkout_state": {"checkout_button_count": 1}},
+    }
+
+
+def test_resy_adapter_resume_booking_preserves_failure_debug_payload():
+    client = FakeResyClient()
+    client.resume_response = {
+        "status": "failure",
+        "reason": "resume_failed",
+        "debug": {"checkout_state": {"snapshot_error": True}},
+    }
+    adapter = ResyAdapter(client)
+
+    result = adapter.resume_booking("resume-token")
+
+    assert result == {
+        "status": "failure",
+        "reason": "resume_failed",
+        "debug": {"checkout_state": {"snapshot_error": True}},
+    }
+
+
 def test_resy_adapter_preserves_failure_debug_payload():
     client = FakeResyClient()
     client.book_response = {
