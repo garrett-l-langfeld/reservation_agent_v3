@@ -148,7 +148,23 @@ def process_reservation_request(
                 "alternative_times": alternative_times,
             }
 
+        if booking_result.get("status") == "user_action_required":
+            LOGGER.info("fallback_checkout_user_action_required")
+            return {
+                "status": "requires_user_action",
+                "reason": "checkout_opened",
+                "prompt": booking_result.get(
+                    "prompt", "Complete checkout details in browser and resume"
+                ),
+                "resume_token": booking_result.get("resume_token"),
+                "restaurant": restaurant["name"],
+                "time": selected_slot["time"],
+                "alternative_times": alternative_times,
+                "booking_debug": booking_result.get("debug"),
+            }
+
         LOGGER.info("fallback_booking_failed")
+        booking_debug = booking_result.get("debug")
         return {
             "status": "failure",
             "reason": booking_result.get("reason", "booking_failed"),
@@ -159,6 +175,7 @@ def process_reservation_request(
                 party_size=normalized_request["party_size"],
                 requested_time=normalized_request.get("time") or selected_slot["time"],
             ),
+            "booking_debug": booking_debug,
         }
     except Exception:
         LOGGER.exception("platform_failure")

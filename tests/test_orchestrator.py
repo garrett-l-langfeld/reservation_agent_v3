@@ -57,6 +57,30 @@ def test_process_reservation_fallback_when_booking_fails():
     assert len(result["alternative_times"]) >= 1
 
 
+def test_process_reservation_includes_booking_debug_on_failure():
+    class BookingFailWithDebugAdapter(MockResyAdapter):
+        def attempt_booking(self, *args, **kwargs):  # type: ignore[override]
+            _ = (args, kwargs)
+            return {
+                "status": "failure",
+                "reason": "slot_click_failed",
+                "debug": {"matching_count": 2, "top_candidates": [{"text": "6:30 PM"}]},
+            }
+
+    result = process_reservation_request(
+        _valid_request(),
+        adapter=BookingFailWithDebugAdapter(),
+        reference_date=date(2026, 4, 20),
+    )
+
+    assert result["status"] == "failure"
+    assert result["reason"] == "slot_click_failed"
+    assert result["booking_debug"] == {
+        "matching_count": 2,
+        "top_candidates": [{"text": "6:30 PM"}],
+    }
+
+
 def test_process_reservation_no_availability_response():
     class NoAvailabilityAdapter(MockResyAdapter):
         def resolve_restaurant(self, restaurant_name: str, location: str) -> dict:
@@ -141,6 +165,29 @@ def test_process_reservation_handles_captcha_pause_prompt_resume():
 
     assert resumed["status"] == "success"
     assert resumed["confirmation_details"] == "RESUME-OK"
+
+
+def test_process_reservation_handles_checkout_opened_as_user_action_required():
+    class CheckoutOpenedAdapter(MockResyAdapter):
+        def attempt_booking(self, *args, **kwargs):  # type: ignore[override]
+            _ = (args, kwargs)
+            return {
+                "status": "user_action_required",
+                "prompt": "Complete checkout details",
+                "resume_token": "resume-checkout-123",
+                "debug": {"clicked_via": "role_button_contains"},
+            }
+
+    result = process_reservation_request(
+        _valid_request(),
+        adapter=CheckoutOpenedAdapter(),
+        reference_date=date(2026, 4, 20),
+    )
+
+    assert result["status"] == "requires_user_action"
+    assert result["reason"] == "checkout_opened"
+    assert result["resume_token"] == "resume-checkout-123"
+    assert result["booking_debug"] == {"clicked_via": "role_button_contains"}
 
 
 def test_process_reservation_emits_required_logs(caplog: pytest.LogCaptureFixture):

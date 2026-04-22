@@ -91,3 +91,51 @@ def test_resy_adapter_resume_booking_success():
 
     assert result["status"] == "success"
     assert result["confirmation_code"] == "RSY-2"
+
+
+def test_resy_adapter_preserves_failure_debug_payload():
+    client = FakeResyClient()
+    client.book_response = {
+        "status": "failure",
+        "reason": "slot_click_failed",
+        "debug": {"matching_count": 1, "top_candidates": [{"text": "6:30 PM"}]},
+    }
+    adapter = ResyAdapter(client)
+
+    result = adapter.attempt_booking(
+        restaurant_id="r1",
+        date="2026-05-05",
+        party_size=2,
+        slot_time="6:30 PM",
+        user_details={"name": "A", "email": "a@example.com", "phone": "1234567890"},
+    )
+
+    assert result["status"] == "failure"
+    assert result["reason"] == "slot_click_failed"
+    assert result["debug"] == {"matching_count": 1, "top_candidates": [{"text": "6:30 PM"}]}
+
+
+def test_resy_adapter_maps_checkout_opened_to_user_action_required():
+    client = FakeResyClient()
+    client.book_response = {
+        "status": "checkout_opened",
+        "prompt": "Complete checkout and resume",
+        "resume_token": "resume-xyz",
+        "debug": {"clicked_via": "role_button_contains"},
+    }
+    adapter = ResyAdapter(client)
+
+    result = adapter.attempt_booking(
+        restaurant_id="r1",
+        date="2026-05-05",
+        party_size=2,
+        slot_time="6:30 PM",
+        user_details={"name": "A", "email": "a@example.com", "phone": "1234567890"},
+    )
+
+    assert result == {
+        "status": "user_action_required",
+        "prompt": "Complete checkout and resume",
+        "resume_token": "resume-xyz",
+        "debug": {"clicked_via": "role_button_contains"},
+    }

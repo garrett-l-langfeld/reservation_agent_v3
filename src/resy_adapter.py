@@ -123,9 +123,21 @@ class ResyAdapter(PlatformAdapter):
                 "resume_token": result.get("resume_token"),
             }
 
+        if status in {"checkout_opened", "user_action_required"}:
+            return {
+                "status": "user_action_required",
+                "prompt": result.get(
+                    "prompt",
+                    "Booking details opened. Complete remaining checkout steps and resume.",
+                ),
+                "resume_token": result.get("resume_token"),
+                "debug": result.get("debug"),
+            }
+
         return {
             "status": "failure",
             "reason": result.get("reason", "booking_failed"),
+            "debug": result.get("debug"),
         }
 
     def generate_handoff(
