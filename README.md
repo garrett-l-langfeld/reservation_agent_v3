@@ -60,7 +60,7 @@ pip install -r requirements.txt
 ## Example: Real Headed Run
 
 ```bash
-.venv/bin/python -m src.main --adapter real --headed --session-profile-dir .resy_profile --request-json '{"restaurant_name":"Poesia Osteria Italiana","location":"San Francisco, CA","date":"2026-05-13","time":"6:30 PM","party_size":2,"user_name":"Garrett Langfeld","user_email":"glangfeld@comcast.net","user_phone":"510-479-5427"}'
+.venv/bin/python -m src.main --adapter real --headed --session-profile-dir .resy_profile --request-json '{"restaurant_name":"Poesia Osteria Italiana","location":"San Francisco, CA","date":"2026-05-13","time":"6:30 PM","party_size":2,"user_name":"Alex Example","user_email":"alex@example.com","user_phone":"555-555-0123"}'
 ```
 
 ## Request Shape
