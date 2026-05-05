@@ -34,8 +34,13 @@ def run_with_real_adapter(
     *,
     headless: bool = True,
     timeout_ms: int = 20_000,
+    session_profile_dir: str = ".resy_profile",
 ) -> dict[str, Any]:
-    adapter = _create_real_adapter(headless=headless, timeout_ms=timeout_ms)
+    adapter = _create_real_adapter(
+        headless=headless,
+        timeout_ms=timeout_ms,
+        session_profile_dir=session_profile_dir,
+    )
     try:
         return process_reservation_request(
             request,
@@ -46,8 +51,19 @@ def run_with_real_adapter(
         _close_adapter_client(adapter)
 
 
-def _create_real_adapter(*, headless: bool, timeout_ms: int) -> ResyAdapter:
-    return ResyAdapter(ResyLiveClient(headless=headless, timeout_ms=timeout_ms))
+def _create_real_adapter(
+    *,
+    headless: bool,
+    timeout_ms: int,
+    session_profile_dir: str,
+) -> ResyAdapter:
+    return ResyAdapter(
+        ResyLiveClient(
+            headless=headless,
+            timeout_ms=timeout_ms,
+            session_profile_dir=session_profile_dir,
+        )
+    )
 
 
 def _close_adapter_client(adapter: Any) -> None:
@@ -91,6 +107,14 @@ def run_cli(argv: list[str] | None = None) -> int:
         default=20_000,
         help="Per-operation Playwright timeout in milliseconds (real adapter only).",
     )
+    parser.add_argument(
+        "--session-profile-dir",
+        default=".resy_profile",
+        help=(
+            "Directory for persistent browser profile/session state used by the real adapter "
+            "(default: .resy_profile)."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -113,6 +137,7 @@ def run_cli(argv: list[str] | None = None) -> int:
                 reference_date=parsed_reference_date,
                 headless=not args.headed,
                 timeout_ms=args.timeout_ms,
+                session_profile_dir=args.session_profile_dir,
             )
         except Exception as error:
             print(

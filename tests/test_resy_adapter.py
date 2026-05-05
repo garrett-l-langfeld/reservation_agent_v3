@@ -38,6 +38,34 @@ class FakeResyClient:
         return f"https://resy.com/mock-handoff/{kwargs['restaurant_id']}"
 
 
+def test_resy_adapter_ensure_authenticated_defaults_to_authenticated_when_client_has_no_hook():
+    adapter = ResyAdapter(FakeResyClient())
+
+    result = adapter.ensure_authenticated()
+
+    assert result == {"status": "authenticated"}
+
+
+def test_resy_adapter_ensure_authenticated_maps_login_required_to_user_action():
+    client = FakeResyClient()
+    client.ensure_authenticated_session = lambda: {  # type: ignore[attr-defined]
+        "status": "login_required",
+        "prompt": "Log in first",
+        "debug": {"auth_state": {"needs_login": True}},
+    }
+    adapter = ResyAdapter(client)
+
+    result = adapter.ensure_authenticated()
+
+    assert result == {
+        "status": "user_action_required",
+        "reason": "login_required",
+        "prompt": "Log in first",
+        "resume_token": None,
+        "debug": {"auth_state": {"needs_login": True}},
+    }
+
+
 def test_resy_adapter_resolves_exact_match():
     adapter = ResyAdapter(FakeResyClient())
 
@@ -174,7 +202,35 @@ def test_resy_adapter_maps_checkout_opened_to_user_action_required():
 
     assert result == {
         "status": "user_action_required",
+        "reason": "checkout_opened",
         "prompt": "Complete checkout and resume",
         "resume_token": "resume-xyz",
         "debug": {"clicked_via": "role_button_contains"},
+    }
+
+
+def test_resy_adapter_maps_login_refresh_to_user_action_required():
+    client = FakeResyClient()
+    client.book_response = {
+        "status": "login_refresh_required",
+        "prompt": "Log in again and resume",
+        "resume_token": "resume-login-1",
+        "debug": {"auth_state": {"needs_login": True}},
+    }
+    adapter = ResyAdapter(client)
+
+    result = adapter.attempt_booking(
+        restaurant_id="r1",
+        date="2026-05-05",
+        party_size=2,
+        slot_time="6:30 PM",
+        user_details={"name": "A", "email": "a@example.com", "phone": "1234567890"},
+    )
+
+    assert result == {
+        "status": "user_action_required",
+        "reason": "login_refresh_required",
+        "prompt": "Log in again and resume",
+        "resume_token": "resume-login-1",
+        "debug": {"auth_state": {"needs_login": True}},
     }

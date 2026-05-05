@@ -4,6 +4,8 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
 from urllib.parse import quote
@@ -11,6 +13,10 @@ from urllib.parse import urlencode
 
 
 _TIME_PATTERN = re.compile(r"\b(?:1[0-2]|[1-9])(?::[0-5]\d)?\s?(?:AM|PM)\b", re.IGNORECASE)
+_LOGIN_WAIT_TIMEOUT_MS = 30_000
+_LOGIN_INTERACTIVE_TIMEOUT_MS = 300_000
+_HEADER_ACTION_POLL_MS = 750
+_HEADER_ACTION_POLL_ATTEMPTS = 4
 
 
 @dataclass(frozen=True)
@@ -35,11 +41,15 @@ class ResyLiveClient:
         timeout_ms: int = 20_000,
         base_url: str = "https://resy.com",
         reuse_browser_session: bool = True,
+        session_profile_dir: str = ".resy_profile",
     ):
         self.headless = headless
         self.timeout_ms = timeout_ms
         self.base_url = base_url.rstrip("/")
         self.reuse_browser_session = reuse_browser_session
+        self.session_profile_dir = session_profile_dir
+        self._session_profile_path = Path(self.session_profile_dir).expanduser().resolve()
+        self._storage_state_path = self._session_profile_path / "storage_state.json"
         self._playwright = None
         self._browser = None
         self._context = None
@@ -74,6 +84,113 @@ class ResyLiveClient:
                 return results
 
         return []
+
+    def ensure_authenticated_session(self) -> dict[str, Any]:
+        with self._open_page(self.base_url) as page:
+            page = _switch_to_new_booking_page_if_present(page)
+            auth_state = _collect_auth_state(page)
+            if auth_state.get("logged_in"):
+                return {
+                    "status": "authenticated",
+                    "debug": {"auth_state": auth_state},
+                }
+
+            if _page_looks_like_captcha(page):
+                return {
+                    "status": "captcha_required",
+                    "prompt": "Complete CAPTCHA in browser and continue.",
+                    "resume_token": None,
+                    "debug": {"auth_state": auth_state},
+                }
+
+            if self.headless:
+                return {
+                    "status": "login_required",
+                    "prompt": "Login is required. Re-run with --headed, log in to Resy, then continue.",
+                    "resume_token": None,
+                    "debug": {"auth_state": auth_state},
+                }
+
+            login_click = _click_login_button(page)
+            wait_result = _wait_for_login_modal_or_authenticated_session(
+                page,
+                timeout_ms=_LOGIN_WAIT_TIMEOUT_MS,
+                return_on_modal_open=True,
+            )
+            if wait_result.get("status") == "authenticated":
+                return {
+                    "status": "authenticated",
+                    "debug": {
+                        "auth_state": wait_result.get("auth_state"),
+                        "login_modal_state": wait_result.get("login_modal_state"),
+                        "login_click": login_click,
+                    },
+                }
+            if wait_result.get("status") == "captcha_required":
+                return {
+                    "status": "captcha_required",
+                    "prompt": "Complete CAPTCHA in browser and continue.",
+                    "resume_token": None,
+                    "debug": {
+                        "auth_state": wait_result.get("auth_state"),
+                        "login_modal_state": wait_result.get("login_modal_state"),
+                        "login_click": login_click,
+                    },
+                }
+            if wait_result.get("status") == "login_modal_opened":
+                interactive_wait = _wait_for_login_modal_or_authenticated_session(
+                    page,
+                    timeout_ms=_LOGIN_INTERACTIVE_TIMEOUT_MS,
+                    return_on_modal_open=False,
+                )
+                if interactive_wait.get("status") == "authenticated":
+                    return {
+                        "status": "authenticated",
+                        "debug": {
+                            "auth_state": interactive_wait.get("auth_state"),
+                            "login_modal_state": interactive_wait.get("login_modal_state"),
+                            "login_click": login_click,
+                            "login_modal_opened": True,
+                            "interactive_wait_completed": True,
+                        },
+                    }
+                if interactive_wait.get("status") == "captcha_required":
+                    return {
+                        "status": "captcha_required",
+                        "prompt": "Complete CAPTCHA in browser and continue.",
+                        "resume_token": None,
+                        "debug": {
+                            "auth_state": interactive_wait.get("auth_state"),
+                            "login_modal_state": interactive_wait.get("login_modal_state"),
+                            "login_click": login_click,
+                            "login_modal_opened": True,
+                            "interactive_wait_completed": True,
+                        },
+                    }
+                return {
+                    "status": "login_required",
+                    "prompt": "Log in to Resy in the opened browser, then re-run the reservation command.",
+                    "resume_token": None,
+                    "debug": {
+                        "auth_state": interactive_wait.get("auth_state", auth_state),
+                        "login_modal_state": interactive_wait.get("login_modal_state"),
+                        "login_click": login_click,
+                        "login_modal_opened": True,
+                        "interactive_wait_timeout_ms": _LOGIN_INTERACTIVE_TIMEOUT_MS,
+                        "interactive_wait_status": interactive_wait.get("status"),
+                        "interactive_modal_seen": interactive_wait.get("modal_seen"),
+                    },
+                }
+            return {
+                "status": "login_required",
+                "prompt": "Log in to Resy in the opened browser, then re-run the reservation command.",
+                "resume_token": None,
+                "debug": {
+                    "auth_state": wait_result.get("auth_state", auth_state),
+                    "login_modal_state": wait_result.get("login_modal_state"),
+                    "login_click": login_click,
+                },
+            }
 
     def fetch_availability(
         self,
@@ -122,6 +239,20 @@ class ResyLiveClient:
         )
 
         with self._open_page(venue_url) as page:
+            auth_state = _collect_auth_state(page)
+            if auth_state.get("needs_login"):
+                prompt = "Log in to Resy in the opened browser, then resume booking."
+                if self.headless:
+                    prompt = "Login is required. Re-run with --headed, log in to Resy, then resume booking."
+                return {
+                    "status": "login_required",
+                    "prompt": prompt,
+                    "resume_token": _encode_resume_payload(
+                        ResumePayload(url=str(getattr(page, "url", venue_url)), slot_time=slot_time)
+                    ),
+                    "debug": {"auth_state": auth_state},
+                }
+
             if _page_looks_like_captcha(page):
                 return {
                     "status": "captcha_required",
@@ -148,11 +279,21 @@ class ResyLiveClient:
             transition_polls: list[dict[str, Any]] = []
             post_click_retries: list[dict[str, Any]] = []
             reserve_now_attempts: list[dict[str, Any]] = []
+            confirm_attempts: list[dict[str, Any]] = []
             post_click_state = _collect_checkout_state(page)
             for poll_index in range(1, 7):
                 reserve_now = _click_reserve_now_modal_button(page)
                 reserve_now_attempts.append({"poll_index": poll_index, **reserve_now})
+                confirm_click = _click_confirm_modal_button(page)
+                confirm_attempts.append({"poll_index": poll_index, **confirm_click})
                 if reserve_now.get("clicked"):
+                    page.wait_for_timeout(1_000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=1_500)
+                    except Exception:
+                        pass
+                    page = _switch_to_new_booking_page_if_present(page)
+                elif confirm_click.get("clicked"):
                     page.wait_for_timeout(1_000)
                     try:
                         page.wait_for_load_state("networkidle", timeout=1_500)
@@ -196,6 +337,7 @@ class ResyLiveClient:
                         "click": retry_click.diagnostics,
                         "clicked": retry_click.clicked,
                         "reserve_now_attempts": [],
+                        "confirm_attempts": [],
                         "polls": [],
                     }
                     post_click_retries.append(retry_entry)
@@ -207,7 +349,13 @@ class ResyLiveClient:
                         retry_entry["reserve_now_attempts"].append(
                             {"poll_index": poll_index, **retry_reserve_now}
                         )
+                        retry_confirm = _click_confirm_modal_button(page)
+                        retry_entry["confirm_attempts"].append(
+                            {"poll_index": poll_index, **retry_confirm}
+                        )
                         if retry_reserve_now.get("clicked"):
+                            page.wait_for_timeout(1_000)
+                        elif retry_confirm.get("clicked"):
                             page.wait_for_timeout(1_000)
                         page = _switch_to_new_booking_page_if_present(page)
                         post_click_url = str(getattr(page, "url", ""))
@@ -235,6 +383,22 @@ class ResyLiveClient:
                     ):
                         break
 
+            auth_state_after_click = _collect_auth_state(page)
+            if auth_state_after_click.get("needs_login"):
+                prompt = "Your Resy session appears expired. Log in again in browser and resume."
+                if self.headless:
+                    prompt = (
+                        "Session refresh is required. Re-run with --headed, log in to Resy, then resume booking."
+                    )
+                return {
+                    "status": "login_refresh_required",
+                    "prompt": prompt,
+                    "resume_token": _encode_resume_payload(
+                        ResumePayload(url=str(getattr(page, "url", venue_url)), slot_time=slot_time)
+                    ),
+                    "debug": {"auth_state": auth_state_after_click},
+                }
+
             if _page_looks_like_captcha(page):
                 return {
                     "status": "captcha_required",
@@ -246,6 +410,17 @@ class ResyLiveClient:
                 return {
                     "status": "success",
                     "confirmation_code": _extract_confirmation_code(page.content()),
+                }
+
+            if _page_looks_sms_verification(page):
+                return {
+                    "status": "sms_verification_required",
+                    "prompt": "Enter the SMS verification code in browser, then resume booking.",
+                    "resume_token": _encode_resume_payload(ResumePayload(url=page.url, slot_time=slot_time)),
+                    "debug": {
+                        "pre_click_url": pre_click_url,
+                        "post_click_url": str(getattr(page, "url", "")),
+                    },
                 }
 
             if _page_looks_checkout_opened(page) or _checkout_state_indicates_opened(post_click_state):
@@ -298,6 +473,7 @@ class ResyLiveClient:
                         "transition_polls": transition_polls,
                         "post_click_retries": post_click_retries,
                         "reserve_now_attempts": reserve_now_attempts,
+                        "confirm_attempts": confirm_attempts,
                     },
                 }
 
@@ -315,6 +491,7 @@ class ResyLiveClient:
                         "transition_polls": transition_polls,
                         "post_click_retries": post_click_retries,
                         "reserve_now_attempts": reserve_now_attempts,
+                        "confirm_attempts": confirm_attempts,
                     },
                 }
 
@@ -376,6 +553,7 @@ class ResyLiveClient:
         )
 
     def close(self) -> None:
+        self._persist_session_state()
         if self._context is not None:
             self._context.close()
         if self._browser is not None:
@@ -389,7 +567,7 @@ class ResyLiveClient:
         self._page = None
 
     def _ensure_persistent_page(self) -> Any:
-        if self._page is not None:
+        if self._page is not None and not self._page.is_closed():
             return self._page
 
         try:
@@ -400,11 +578,24 @@ class ResyLiveClient:
             ) from error
 
         self._playwright = sync_playwright().start()
+        self._session_profile_path.mkdir(parents=True, exist_ok=True)
         self._browser = self._playwright.chromium.launch(headless=self.headless)
-        self._context = self._browser.new_context()
+        context_kwargs: dict[str, Any] = {}
+        if self._storage_state_path.exists():
+            context_kwargs["storage_state"] = str(self._storage_state_path)
+        self._context = self._browser.new_context(**context_kwargs)
         self._page = self._context.new_page()
         self._page.set_default_timeout(self.timeout_ms)
         return self._page
+
+    def _persist_session_state(self) -> None:
+        if self._context is None:
+            return
+        try:
+            self._session_profile_path.mkdir(parents=True, exist_ok=True)
+            self._context.storage_state(path=str(self._storage_state_path))
+        except Exception:
+            pass
 
 
 class _PersistentPageSession:
@@ -1040,13 +1231,569 @@ def _html_looks_like_captcha(html: str) -> bool:
 
 
 def _page_looks_confirmed(page: Any) -> bool:
-    html = page.content().lower()
     markers = [
         "reservation confirmed",
+        "reservation booked",
         "booking confirmed",
         "you're all set",
         "you are all set",
     ]
+    try:
+        html_candidates = [page.content().lower()]
+    except Exception:
+        html_candidates = []
+
+    try:
+        for frame in list(page.frames)[1:]:
+            try:
+                html_candidates.append(frame.content().lower())
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return any(marker in html for html in html_candidates for marker in markers)
+
+
+def _collect_auth_state(page: Any) -> dict[str, Any]:
+    try:
+        state = page.evaluate(
+            """
+            () => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const bodyText = normalize(document.body?.innerText || "");
+                const hasLoginText = bodyText.includes("log in") || bodyText.includes("sign in");
+                const accountSelectors = [
+                  "[data-test-id*='account']",
+                  "[data-testid*='account']",
+                  "[aria-label*='account' i]",
+                  "a[href*='/settings']",
+                  "a[href*='/profile']",
+                  "button[aria-label*='account' i]",
+                ];
+                const hasAccountElement = accountSelectors.some((selector) =>
+                  document.querySelector(selector) instanceof HTMLElement
+                );
+                const hasLogoutText = bodyText.includes("log out") || bodyText.includes("sign out");
+                const loginCtas = Array.from(document.querySelectorAll("a, button, [role='button']"))
+                  .map((node) => normalize(node.textContent || node.getAttribute("aria-label") || ""))
+                  .filter(Boolean);
+                const hasLoginCta = loginCtas.some(
+                  (text) => text === "log in" || text === "sign in" || text.includes("log in")
+                );
+                const inferredLoggedInFromMissingLoginCta = Boolean(
+                  !hasLoginCta && !hasAccountElement && !hasLogoutText
+                );
+                const loggedIn = Boolean(hasAccountElement || hasLogoutText || inferredLoggedInFromMissingLoginCta);
+                const needsLogin = Boolean(hasLoginCta && !loggedIn);
+                return {
+                  logged_in: loggedIn,
+                  needs_login: needsLogin,
+                  has_login_cta: hasLoginCta,
+                  has_login_text: hasLoginText,
+                  has_account_element: hasAccountElement,
+                  has_logout_text: hasLogoutText,
+                  inferred_logged_in_from_missing_login_cta: inferredLoggedInFromMissingLoginCta,
+                  url: window.location.href,
+                };
+            }
+            """
+        )
+    except Exception:
+        return {"logged_in": False, "needs_login": False, "detection_error": True}
+
+    if not isinstance(state, dict):
+        return {"logged_in": False, "needs_login": False, "detection_error": True}
+    return state
+
+
+def _click_login_button(page: Any) -> dict[str, Any]:
+    selectors = [
+        (
+            "css_resy_nav_login_button_exact_path",
+            lambda: page.locator(
+                "div.ResyNav__right-wrapper:nth-of-type(2) > resy-menu-container > "
+                "div.MenuContainer.MenuContainer--desktop > button.Button.Button--login"
+            ),
+        ),
+        (
+            "css_resy_nav_login_button",
+            lambda: page.locator(
+                "div.ResyNav__right-wrapper > resy-menu-container button.Button.Button--login, "
+                "div.ResyNav__right-wrapper button.Button.Button--login, "
+                "button.Button.Button--login"
+            ),
+        ),
+        (
+            "css_button_login_lowercase",
+            lambda: page.locator("button:has-text('Log in'), button:has-text('Sign in')"),
+        ),
+        (
+            "role_link_exact_log_in",
+            lambda: page.get_by_role("link", name=re.compile(r"^\s*log in\s*$", re.IGNORECASE)),
+        ),
+        (
+            "role_button_exact_log_in",
+            lambda: page.get_by_role("button", name=re.compile(r"^\s*log in\s*$", re.IGNORECASE)),
+        ),
+        (
+            "role_link_contains_sign_in",
+            lambda: page.get_by_role("link", name=re.compile(r"sign in|log in", re.IGNORECASE)),
+        ),
+        (
+            "role_button_contains_sign_in",
+            lambda: page.get_by_role("button", name=re.compile(r"sign in|log in", re.IGNORECASE)),
+        ),
+        ("css_link_text_log_in", lambda: page.locator("a:has-text('Log In'), a:has-text('Sign In')")),
+        (
+            "css_button_text_log_in",
+            lambda: page.locator("button:has-text('Log In'), button:has-text('Sign In')"),
+        ),
+    ]
+    attempted: list[str] = []
+    selector_diagnostics: list[dict[str, Any]] = []
+    menu_open_attempt = _open_resy_navigation_menu(page)
+    if menu_open_attempt.get("opened"):
+        attempted.append("open_resy_navigation_menu")
+    for selector_name, locator_factory in selectors:
+        attempted.append(selector_name)
+        try:
+            locator = locator_factory()
+            candidate_count = locator.count()
+            selector_info: dict[str, Any] = {
+                "selector": selector_name,
+                "candidate_count": candidate_count,
+                "visible_candidates": [],
+            }
+            selector_diagnostics.append(selector_info)
+            if candidate_count == 0:
+                continue
+            for index in range(candidate_count):
+                candidate = locator.nth(index)
+                try:
+                    is_visible = bool(candidate.is_visible())
+                    if not is_visible:
+                        selector_info["visible_candidates"].append(
+                            {
+                                "index": index,
+                                "visible": False,
+                            }
+                        )
+                        continue
+                except Exception:
+                    selector_info["visible_candidates"].append(
+                        {
+                            "index": index,
+                            "visible": None,
+                            "visibility_error": True,
+                        }
+                    )
+                    continue
+                clicked_text = ""
+                try:
+                    clicked_text = str(candidate.inner_text(timeout=800)).strip()
+                except Exception:
+                    clicked_text = ""
+                selector_info["visible_candidates"].append(
+                    {
+                        "index": index,
+                        "visible": True,
+                        "text": clicked_text,
+                    }
+                )
+                try:
+                    candidate.click(timeout=2_500)
+                except Exception:
+                    candidate.click(timeout=2_500, force=True)
+                return {
+                    "clicked": True,
+                    "clicked_via": selector_name,
+                    "clicked_text": clicked_text,
+                    "clicked_index": index,
+                    "candidate_count": candidate_count,
+                    "attempted_selectors": attempted,
+                    "selector_diagnostics": selector_diagnostics,
+                    "menu_open_attempt": menu_open_attempt,
+                }
+            try:
+                clicked_text = str(locator.first.inner_text(timeout=800)).strip()
+            except Exception:
+                clicked_text = ""
+            try:
+                locator.first.click(timeout=2_500, force=True)
+                return {
+                    "clicked": True,
+                    "clicked_via": f"{selector_name}_force",
+                    "clicked_text": clicked_text,
+                    "candidate_count": candidate_count,
+                    "attempted_selectors": attempted,
+                    "selector_diagnostics": selector_diagnostics,
+                    "menu_open_attempt": menu_open_attempt,
+                }
+            except Exception:
+                pass
+        except Exception as error:
+            attempted.append(f"{selector_name}_error:{error.__class__.__name__}")
+            selector_diagnostics.append(
+                {
+                    "selector": selector_name,
+                    "error": error.__class__.__name__,
+                }
+            )
+
+    try:
+        fallback = page.evaluate(
+            """
+            () => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const exactNavSelectors = [
+                  "div.ResyNav__right-wrapper:nth-of-type(2) > resy-menu-container > div.MenuContainer.MenuContainer--desktop > button.Button.Button--login",
+                  "div.ResyNav__right-wrapper > resy-menu-container button.Button.Button--login",
+                  "div.ResyNav__right-wrapper button.Button.Button--login",
+                  "button.Button.Button--login",
+                ];
+                const summarize = (node, index) => {
+                  if (!(node instanceof HTMLElement)) return null;
+                  return {
+                    index,
+                    tag: node.tagName.toLowerCase(),
+                    text: (node.textContent || node.getAttribute("aria-label") || "").trim(),
+                    class_name: node.className || "",
+                    role: node.getAttribute("role") || "",
+                    visible: node.getClientRects().length > 0,
+                  };
+                };
+                for (const selector of exactNavSelectors) {
+                  const node = document.querySelector(selector);
+                  if (!(node instanceof HTMLElement)) continue;
+                  node.scrollIntoView({ block: "center", inline: "center" });
+                  node.click();
+                  return {
+                    clicked: true,
+                    clicked_via: "evaluate_exact_nav_login_button",
+                    clicked_text: (node.textContent || node.getAttribute("aria-label") || "").trim(),
+                    dom_candidates: exactNavSelectors.map((candidateSelector) => ({
+                      selector: candidateSelector,
+                      matched: Boolean(document.querySelector(candidateSelector)),
+                    })),
+                  };
+                }
+                const nodes = Array.from(document.querySelectorAll("button, a, [role='button']"));
+                const samples = nodes
+                  .map((node, index) => summarize(node, index))
+                  .filter(Boolean)
+                  .slice(0, 25);
+                for (const node of nodes) {
+                  if (!(node instanceof HTMLElement)) continue;
+                  const text = normalize(node.textContent || node.getAttribute("aria-label") || "");
+                  const cls = normalize(node.className || "");
+                  if (
+                    text === "log in" ||
+                    text === "sign in" ||
+                    text.includes("log in") ||
+                    cls.includes("button--login")
+                  ) {
+                    node.scrollIntoView({ block: "center", inline: "center" });
+                    node.click();
+                    return {
+                      clicked: true,
+                      clicked_via: "evaluate_login_button_scan",
+                      clicked_text: (node.textContent || node.getAttribute("aria-label") || "").trim(),
+                      dom_candidates: samples,
+                    };
+                  }
+                }
+                return {
+                  clicked: false,
+                  dom_candidates: samples,
+                  body_has_log_in: normalize(document.body?.innerText || "").includes("log in"),
+                  exact_nav_selector_matches: exactNavSelectors.map((selector) => ({
+                    selector,
+                    matched: Boolean(document.querySelector(selector)),
+                  })),
+                };
+            }
+            """
+        )
+        if isinstance(fallback, dict) and fallback.get("clicked"):
+            return {
+                "clicked": True,
+                "clicked_via": fallback.get("clicked_via", "evaluate_login_button_scan"),
+                "clicked_text": fallback.get("clicked_text", ""),
+                "attempted_selectors": attempted + ["evaluate_login_button_scan"],
+                "selector_diagnostics": selector_diagnostics,
+                "dom_candidates": fallback.get("dom_candidates", []),
+                "menu_open_attempt": menu_open_attempt,
+            }
+        attempted.append("evaluate_login_button_scan")
+        if isinstance(fallback, dict):
+            return {
+                "clicked": False,
+                "attempted_selectors": attempted,
+                "selector_diagnostics": selector_diagnostics,
+                "dom_candidates": fallback.get("dom_candidates", []),
+                "body_has_log_in": fallback.get("body_has_log_in"),
+                "exact_nav_selector_matches": fallback.get("exact_nav_selector_matches", []),
+                "menu_open_attempt": menu_open_attempt,
+            }
+    except Exception as error:
+        attempted.append(f"evaluate_login_button_scan_error:{error.__class__.__name__}")
+
+    return {
+        "clicked": False,
+        "attempted_selectors": attempted,
+        "selector_diagnostics": selector_diagnostics,
+        "menu_open_attempt": menu_open_attempt,
+    }
+
+
+def _wait_for_login_modal_or_authenticated_session(
+    page: Any,
+    timeout_ms: int,
+    *,
+    return_on_modal_open: bool = True,
+) -> dict[str, Any]:
+    deadline = monotonic() + (timeout_ms / 1000)
+    latest_auth_state = _collect_auth_state(page)
+    latest_login_modal_state = _collect_login_modal_state(page)
+    modal_seen = bool(
+        latest_login_modal_state.get("modal_visible") or latest_login_modal_state.get("has_auth_phrase")
+    )
+    while monotonic() < deadline:
+        page = _switch_to_new_booking_page_if_present(page)
+        latest_auth_state = _collect_auth_state(page)
+        latest_login_modal_state = _collect_login_modal_state(page)
+        if latest_login_modal_state.get("modal_visible") or latest_login_modal_state.get("has_auth_phrase"):
+            modal_seen = True
+        if latest_auth_state.get("logged_in"):
+            return {
+                "status": "authenticated",
+                "auth_state": latest_auth_state,
+                "login_modal_state": latest_login_modal_state,
+                "modal_seen": modal_seen,
+            }
+        if (
+            modal_seen
+            and not latest_login_modal_state.get("modal_visible")
+            and not latest_auth_state.get("needs_login")
+        ):
+            return {
+                "status": "authenticated",
+                "auth_state": {
+                    **latest_auth_state,
+                    "inferred_from_modal_completion": True,
+                },
+                "login_modal_state": latest_login_modal_state,
+                "modal_seen": modal_seen,
+            }
+        if _page_looks_like_captcha(page):
+            return {
+                "status": "captcha_required",
+                "auth_state": latest_auth_state,
+                "login_modal_state": latest_login_modal_state,
+                "modal_seen": modal_seen,
+            }
+        if return_on_modal_open and (
+            latest_login_modal_state.get("modal_visible") or latest_login_modal_state.get("has_auth_phrase")
+        ):
+            return {
+                "status": "login_modal_opened",
+                "auth_state": latest_auth_state,
+                "login_modal_state": latest_login_modal_state,
+                "modal_seen": modal_seen,
+            }
+        page.wait_for_timeout(1_000)
+
+    return {
+        "status": "timeout",
+        "auth_state": latest_auth_state,
+        "login_modal_state": latest_login_modal_state,
+        "modal_seen": modal_seen,
+    }
+
+
+def _collect_login_modal_state(page: Any) -> dict[str, Any]:
+    try:
+        state = page.evaluate(
+            """
+            () => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const bodyText = normalize(document.body?.innerText || "");
+                const modalSelectors = [
+                  "div.ReactModal__Content.ReactModal__Content--after-open",
+                  "div.ReactModal__Content--after-open",
+                  "div.AuthContainer",
+                  "div.AuthView",
+                ];
+                const modalNode = modalSelectors
+                  .map((selector) => document.querySelector(selector))
+                  .find((node) => node instanceof HTMLElement && node.getClientRects().length > 0);
+                const modalText = normalize(modalNode?.innerText || modalNode?.textContent || "");
+                const strongPhrases = [
+                  "please enter your mobile phone number",
+                  "log in with email & password",
+                  "log in with email & one-time code",
+                  "enter your mobile phone number",
+                  "verify or create an account",
+                ];
+                return {
+                  modal_visible: Boolean(modalNode),
+                  modal_text: modalText,
+                  has_auth_phrase: strongPhrases.some((phrase) => bodyText.includes(phrase)),
+                  has_phone_prompt: bodyText.includes("mobile phone number"),
+                  has_email_password_link: bodyText.includes("log in with email & password"),
+                  has_one_time_code_link: bodyText.includes("log in with email & one-time code"),
+                  url: window.location.href,
+                };
+            }
+            """
+        )
+    except Exception:
+        return {"modal_visible": False, "detection_error": True}
+
+    if not isinstance(state, dict):
+        return {"modal_visible": False, "detection_error": True}
+    return state
+
+
+def _open_resy_navigation_menu(page: Any) -> dict[str, Any]:
+    selectors = [
+        (
+            "banner_role_button_menu",
+            lambda: page.get_by_role("banner").get_by_role("button", name="Menu", exact=True),
+        ),
+        ("role_button_menu", lambda: page.get_by_role("button", name="Menu", exact=True)),
+        ("css_button_menu", lambda: page.locator("button:has-text('Menu')")),
+        ("css_nav_button_aria_menu", lambda: page.locator("button[aria-label='Menu']")),
+        (
+            "css_button_menu_test_id_exact",
+            lambda: page.locator(
+                "[data-test-id='menu_container-button-menu'], [data-testid='menu_container-button-menu']"
+            ),
+        ),
+    ]
+    attempted: list[str] = []
+    poll_diagnostics: list[dict[str, Any]] = []
+    for poll_index in range(_HEADER_ACTION_POLL_ATTEMPTS):
+        selector_diagnostics: list[dict[str, Any]] = []
+        for selector_name, locator_factory in selectors:
+            attempted.append(selector_name)
+            try:
+                locator = locator_factory()
+                count = locator.count()
+                info: dict[str, Any] = {
+                    "selector": selector_name,
+                    "candidate_count": count,
+                }
+                selector_diagnostics.append(info)
+                if count != 1:
+                    continue
+                if not locator.is_visible():
+                    info["visible"] = False
+                    continue
+                info["visible"] = True
+                try:
+                    text = str(locator.inner_text(timeout=800)).strip()
+                except Exception:
+                    text = "Menu"
+                info["text"] = text
+                normalized_text = text.lower()
+                if "log in" in normalized_text or "sign in" in normalized_text:
+                    info["skipped_reason"] = "menu_selector_matched_login_button"
+                    continue
+                locator.click(timeout=2_500)
+                return {
+                    "opened": True,
+                    "opened_via": selector_name,
+                    "button_text": text,
+                    "attempted_selectors": attempted,
+                    "poll_diagnostics": poll_diagnostics + [{"poll": poll_index, "selectors": selector_diagnostics}],
+                }
+            except Exception as error:
+                attempted.append(f"{selector_name}_error:{error.__class__.__name__}")
+                selector_diagnostics.append(
+                    {
+                        "selector": selector_name,
+                        "error": error.__class__.__name__,
+                    }
+                )
+        poll_diagnostics.append(
+            {
+                "poll": poll_index,
+                "selectors": selector_diagnostics,
+                "header_snapshot": _collect_header_action_snapshot(page),
+            }
+        )
+        if poll_index < _HEADER_ACTION_POLL_ATTEMPTS - 1:
+            _safe_wait_for_timeout(page, _HEADER_ACTION_POLL_MS)
+    return {
+        "opened": False,
+        "attempted_selectors": attempted,
+        "poll_diagnostics": poll_diagnostics,
+    }
+
+
+def _collect_header_action_snapshot(page: Any) -> dict[str, Any]:
+    try:
+        snapshot = page.evaluate(
+            """
+            () => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+                const nodes = Array.from(
+                  document.querySelectorAll(
+                    "header button, [role='banner'] button, nav button, button, [role='button']"
+                  )
+                );
+                const topButtons = nodes
+                  .filter((node) => node instanceof HTMLElement)
+                  .map((node, index) => {
+                    const rect = node.getBoundingClientRect();
+                    return {
+                      index,
+                      text: normalize(node.textContent || node.getAttribute("aria-label") || ""),
+                      aria_label: normalize(node.getAttribute("aria-label") || ""),
+                      class_name: node.className || "",
+                      data_test_id: node.getAttribute("data-test-id") || "",
+                      visible: node.getClientRects().length > 0,
+                      top: Math.round(rect.top),
+                      left: Math.round(rect.left),
+                    };
+                  })
+                  .filter((node) => node.visible)
+                  .sort((a, b) => a.top - b.top || a.left - b.left)
+                  .slice(0, 12);
+                const bodyText = normalize(document.body?.innerText || "").toLowerCase();
+                return {
+                  top_buttons: topButtons,
+                  body_has_menu: bodyText.includes("menu"),
+                  body_has_log_in: bodyText.includes("log in"),
+                };
+            }
+            """
+        )
+    except Exception:
+        return {"snapshot_error": True}
+    if not isinstance(snapshot, dict):
+        return {"snapshot_error": True}
+    return snapshot
+
+
+def _safe_wait_for_timeout(page: Any, timeout_ms: int) -> None:
+    wait_for_timeout = getattr(page, "wait_for_timeout", None)
+    if callable(wait_for_timeout):
+        wait_for_timeout(timeout_ms)
+
+
+def _page_looks_sms_verification(page: Any) -> bool:
+    html = page.content().lower()
+    markers = (
+        "verification code",
+        "enter code",
+        "texted you a code",
+        "text message",
+        "one-time code",
+        "otp",
+    )
     return any(marker in html for marker in markers)
 
 
@@ -1373,6 +2120,87 @@ def _click_reserve_now_modal_button(page: Any) -> dict[str, Any]:
     }
 
 
+def _click_confirm_modal_button(page: Any) -> dict[str, Any]:
+    selectors = [
+        (
+            "role_button_exact_confirm",
+            lambda: page.get_by_role("button", name=re.compile(r"^\s*confirm\s*$", re.IGNORECASE)).first,
+        ),
+        (
+            "role_button_contains_confirm",
+            lambda: page.get_by_role("button", name=re.compile(r"confirm", re.IGNORECASE)).first,
+        ),
+        ("css_button_text_confirm", lambda: page.locator("button:has-text('Confirm')").first),
+        (
+            "css_modal_button_confirm",
+            lambda: page.locator("[role='dialog'] button:has-text('Confirm'), [aria-modal='true'] button:has-text('Confirm')").first,
+        ),
+    ]
+    attempted: list[str] = []
+    for selector_name, locator_factory in selectors:
+        attempted.append(selector_name)
+        try:
+            locator = locator_factory()
+            if locator.count() == 0:
+                continue
+            if not locator.is_visible():
+                continue
+            label = ""
+            try:
+                label = str(locator.inner_text(timeout=800)).strip()
+            except Exception:
+                label = ""
+            locator.click(timeout=2_500)
+            return {
+                "clicked": True,
+                "clicked_via": selector_name,
+                "clicked_text": label,
+                "attempted_selectors": attempted,
+            }
+        except Exception as error:
+            attempted.append(f"{selector_name}_error:{error.__class__.__name__}")
+
+    try:
+        for frame in list(page.frames)[1:]:
+            for selector_name, locator_factory in [
+                (
+                    "frame_role_button_exact_confirm",
+                    lambda: frame.get_by_role(
+                        "button",
+                        name=re.compile(r"^\s*confirm\s*$", re.IGNORECASE),
+                    ).first,
+                ),
+                (
+                    "frame_css_button_text_confirm",
+                    lambda: frame.locator("button:has-text('Confirm'), [role='button']:has-text('Confirm')").first,
+                ),
+            ]:
+                attempted.append(selector_name)
+                try:
+                    locator = locator_factory()
+                    if locator.count() == 0:
+                        continue
+                    if not locator.is_visible():
+                        continue
+                    locator.click(timeout=2_500)
+                    return {
+                        "clicked": True,
+                        "clicked_via": selector_name,
+                        "clicked_text": "Confirm",
+                        "frame_url": str(getattr(frame, "url", "")),
+                        "attempted_selectors": attempted,
+                    }
+                except Exception as error:
+                    attempted.append(f"{selector_name}_error:{error.__class__.__name__}")
+    except Exception as error:
+        attempted.append(f"frame_scan_error:{error.__class__.__name__}")
+
+    return {
+        "clicked": False,
+        "attempted_selectors": attempted,
+    }
+
+
 def _attempt_checkout_autofill_and_submit(page: Any, user_details: dict[str, Any]) -> dict[str, Any]:
     name = str(user_details.get("name") or "").strip()
     email = str(user_details.get("email") or "").strip()
@@ -1386,6 +2214,10 @@ def _attempt_checkout_autofill_and_submit(page: Any, user_details: dict[str, Any
     reserve_now_click = _click_reserve_now_modal_button(page)
     if reserve_now_click.get("clicked"):
         clicks.append("reserve_now_modal")
+        page.wait_for_timeout(800)
+    confirm_click = _click_confirm_modal_button(page)
+    if confirm_click.get("clicked"):
+        clicks.append("confirm_modal")
         page.wait_for_timeout(800)
 
     def _fill_first(selectors: list[str], value: str, key: str) -> None:
@@ -1480,12 +2312,23 @@ def _attempt_checkout_autofill_and_submit(page: Any, user_details: dict[str, Any
         "autofill": filled,
         "clicked_buttons": clicks,
         "reserve_now_click": reserve_now_click,
+        "confirm_click": confirm_click,
     }
 
 
 def _resume_result_from_page(page: Any, payload: ResumePayload) -> dict[str, Any]:
     page.wait_for_timeout(2_000)
     page = _switch_to_new_booking_page_if_present(page)
+    auth_state = _collect_auth_state(page)
+    if auth_state.get("needs_login"):
+        return {
+            "status": "login_refresh_required",
+            "prompt": "Your Resy session appears expired. Log in again in browser and resume.",
+            "resume_token": _encode_resume_payload(
+                ResumePayload(url=str(getattr(page, "url", payload.url)), slot_time=payload.slot_time)
+            ),
+            "debug": {"auth_state": auth_state},
+        }
 
     if _page_looks_like_captcha(page):
         return {
@@ -1497,6 +2340,16 @@ def _resume_result_from_page(page: Any, payload: ResumePayload) -> dict[str, Any
         return {
             "status": "success",
             "confirmation_code": _extract_confirmation_code(page.content()),
+        }
+
+    if _page_looks_sms_verification(page):
+        return {
+            "status": "sms_verification_required",
+            "prompt": "Enter the SMS verification code in browser, then resume booking.",
+            "resume_token": _encode_resume_payload(
+                ResumePayload(url=str(getattr(page, "url", payload.url)), slot_time=payload.slot_time)
+            ),
+            "debug": {"auth_state": auth_state},
         }
 
     checkout_state = _collect_checkout_state(page)
@@ -1518,8 +2371,33 @@ def _resume_result_from_page(page: Any, payload: ResumePayload) -> dict[str, Any
 
 
 def _extract_confirmation_code(html: str) -> str | None:
-    match = re.search(r"\b[A-Z0-9]{6,12}\b", html)
-    if match is None:
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\\1>", " ", html or "")
+    text = re.sub(r"(?is)<!DOCTYPE[^>]*>", " ", text)
+    text = re.sub(r"(?is)<[^>]+>", "\n", text)
+    text = re.sub(r"&nbsp;", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text)
+    normalized_text = text.strip()
+    lowered = normalized_text.lower()
+
+    summary_patterns = [
+        r"(Reservation Booked\.?(?: Please check your inbox for a confirmation email\.)?)",
+        r"(Reservation Confirmed\.?(?: Please check your inbox for a confirmation email\.)?)",
+    ]
+    for pattern in summary_patterns:
+        match = re.search(pattern, normalized_text, re.IGNORECASE)
+        if match is not None:
+            return match.group(1).strip()
+
+    reserved_tokens = {"DOCTYPE", "HTML", "HEAD", "BODY", "SCRIPT", "STYLE"}
+    if "reservation booked" in lowered or "reservation confirmed" in lowered:
+        tokens = re.findall(r"\b[A-Z0-9]{6,12}\b", normalized_text)
+        for token in tokens:
+            if token not in reserved_tokens:
+                return token
+        return "Reservation confirmed"
+
+    match = re.search(r"\b[A-Z0-9]{6,12}\b", normalized_text)
+    if match is None or match.group(0) in reserved_tokens:
         return None
     return match.group(0)
 

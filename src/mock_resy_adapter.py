@@ -6,6 +6,9 @@ from src.platform_adapter import PlatformAdapter
 
 
 class MockResyAdapter(PlatformAdapter):
+    def ensure_authenticated(self) -> dict[str, Any]:
+        return {"status": "authenticated"}
+
     def resolve_restaurant(self, restaurant_name: str, location: str) -> dict[str, Any]:
         name = restaurant_name.strip().lower()
         normalized_location = location.strip().lower()

@@ -10,6 +10,35 @@ class ResyAdapter(PlatformAdapter):
     def __init__(self, client: Any):
         self.client = client
 
+    def ensure_authenticated(self) -> dict[str, Any]:
+        if not hasattr(self.client, "ensure_authenticated_session"):
+            return {"status": "authenticated"}
+
+        result = self.client.ensure_authenticated_session()
+        status = result.get("status")
+        if status in {"authenticated", "success"}:
+            return {"status": "authenticated"}
+        if status in {"captcha", "captcha_required"}:
+            return {
+                "status": "captcha_required",
+                "prompt": result.get("prompt", "Complete CAPTCHA in browser and continue."),
+                "resume_token": result.get("resume_token"),
+                "debug": result.get("debug"),
+            }
+        if status in {"login_required", "login_refresh_required", "sms_verification_required"}:
+            return {
+                "status": "user_action_required",
+                "reason": str(status),
+                "prompt": result.get("prompt", "Complete required browser action and continue."),
+                "resume_token": result.get("resume_token"),
+                "debug": result.get("debug"),
+            }
+        return {
+            "status": "failure",
+            "reason": result.get("reason", "authentication_failed"),
+            "debug": result.get("debug"),
+        }
+
     def resolve_restaurant(self, restaurant_name: str, location: str) -> dict[str, Any]:
         results = self.client.search_restaurants(restaurant_name, location)
         if not results:
@@ -126,10 +155,19 @@ class ResyAdapter(PlatformAdapter):
         if status in {"checkout_opened", "user_action_required"}:
             return {
                 "status": "user_action_required",
+                "reason": result.get("reason", "checkout_opened"),
                 "prompt": result.get(
                     "prompt",
                     "Booking details opened. Complete remaining checkout steps and resume.",
                 ),
+                "resume_token": result.get("resume_token"),
+                "debug": result.get("debug"),
+            }
+        if status in {"login_required", "login_refresh_required", "sms_verification_required"}:
+            return {
+                "status": "user_action_required",
+                "reason": str(status),
+                "prompt": result.get("prompt", "Complete required browser action and resume."),
                 "resume_token": result.get("resume_token"),
                 "debug": result.get("debug"),
             }
@@ -175,11 +213,19 @@ class ResyAdapter(PlatformAdapter):
         if status in {"checkout_opened", "user_action_required"}:
             return {
                 "status": "user_action_required",
-                "reason": "checkout_opened",
+                "reason": result.get("reason", "checkout_opened"),
                 "prompt": result.get(
                     "prompt",
                     "Checkout is open. Complete remaining steps in browser and resume.",
                 ),
+                "resume_token": result.get("resume_token"),
+                "debug": result.get("debug"),
+            }
+        if status in {"login_required", "login_refresh_required", "sms_verification_required"}:
+            return {
+                "status": "user_action_required",
+                "reason": str(status),
+                "prompt": result.get("prompt", "Complete required browser action and resume."),
                 "resume_token": result.get("resume_token"),
                 "debug": result.get("debug"),
             }

@@ -136,6 +136,35 @@ def test_process_reservation_platform_failure_response():
     assert result["reason"] == "platform_failure"
 
 
+def test_process_reservation_auth_preflight_blocks_before_restaurant_resolution():
+    class LoginRequiredAdapter(MockResyAdapter):
+        def __init__(self):
+            self.resolve_called = False
+
+        def ensure_authenticated(self) -> dict[str, str]:  # type: ignore[override]
+            return {
+                "status": "user_action_required",
+                "reason": "login_required",
+                "prompt": "Log in to Resy first",
+            }
+
+        def resolve_restaurant(self, restaurant_name: str, location: str) -> dict:  # type: ignore[override]
+            _ = (restaurant_name, location)
+            self.resolve_called = True
+            return super().resolve_restaurant(restaurant_name, location)
+
+    adapter = LoginRequiredAdapter()
+    result = process_reservation_request(
+        _valid_request(),
+        adapter=adapter,
+        reference_date=date(2026, 4, 20),
+    )
+
+    assert result["status"] == "requires_user_action"
+    assert result["reason"] == "login_required"
+    assert adapter.resolve_called is False
+
+
 def test_process_reservation_handles_captcha_pause_prompt_resume():
     class CaptchaAdapter(MockResyAdapter):
         def attempt_booking(self, *args, **kwargs):  # type: ignore[override]
@@ -188,6 +217,30 @@ def test_process_reservation_handles_checkout_opened_as_user_action_required():
     assert result["reason"] == "checkout_opened"
     assert result["resume_token"] == "resume-checkout-123"
     assert result["booking_debug"] == {"clicked_via": "role_button_contains"}
+
+
+def test_process_reservation_preserves_login_refresh_reason():
+    class LoginRefreshAdapter(MockResyAdapter):
+        def attempt_booking(self, *args, **kwargs):  # type: ignore[override]
+            _ = (args, kwargs)
+            return {
+                "status": "user_action_required",
+                "reason": "login_refresh_required",
+                "prompt": "Log in again and resume",
+                "resume_token": "resume-login-123",
+                "debug": {"auth_state": {"needs_login": True}},
+            }
+
+    result = process_reservation_request(
+        _valid_request(),
+        adapter=LoginRefreshAdapter(),
+        reference_date=date(2026, 4, 20),
+    )
+
+    assert result["status"] == "requires_user_action"
+    assert result["reason"] == "login_refresh_required"
+    assert result["resume_token"] == "resume-login-123"
+    assert result["booking_debug"] == {"auth_state": {"needs_login": True}}
 
 
 def test_resume_captcha_booking_surfaces_checkout_opened_as_user_action():

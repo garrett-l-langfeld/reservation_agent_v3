@@ -6,7 +6,7 @@ _Last updated: April 2026_
 
 ## 1. Overview
 
-A Resy-first reservation agent that attempts to autonomously book a restaurant reservation based on structured user input. If booking fails, the system falls back to user handoff.
+A Resy-first reservation agent that attempts to autonomously book a restaurant reservation based on structured user input. The primary strategy is login-first with persistent local session reuse so repeat bookings can proceed without repeated login. If booking fails or authentication challenges are forced, the system falls back to user-assisted continuation.
 
 ---
 
@@ -23,11 +23,13 @@ Given:
 - user phone
 
 The system should:
-1. Find the restaurant on Resy
-2. Check availability
-3. Select the best slot
-4. Attempt to book the reservation
-5. Return confirmation OR fallback options
+1. Open Resy and verify authenticated session state
+2. If logged out, click `Log In` and wait for user-assisted login
+3. Find the restaurant on Resy
+4. Check availability
+5. Select the best slot
+6. Attempt to book the reservation
+7. Return confirmation OR fallback options
 
 ---
 
@@ -39,13 +41,15 @@ The system should:
 - Availability lookup
 - Slot selection
 - Attempted booking (best-effort)
-- CAPTCHA → prompt user + resume
+- Limited user account session reuse (no credential storage)
+- CAPTCHA/verification/user-action prompts as fallback
 - Fallback to handoff
 
 ### Out of Scope
 - Multi-platform support
 - Phone reservations
-- User accounts
+- Multi-account management
+- Credential vaulting/storage
 - Payment handling
 - Background monitoring
 - Preference learning
@@ -88,22 +92,41 @@ Coordinates:
 - booking
 - response formatting
 
+### 4.6 Session Manager
+Responsible for:
+- one-time login bootstrap in headed mode
+- loading persisted local auth/session artifacts
+- enforcing auth preflight before restaurant search
+- clicking `Log In` and pausing when logged out
+- validating session health before booking and before final submit
+- refreshing session via user-assisted login when expired
+
 ---
 
 ## 5. Booking Strategy
 
 ### Primary
-- Attempt autonomous booking via browser automation
+- Attempt authenticated autonomous booking via browser automation using existing logged-in session
+- Run an auth preflight check before restaurant search
+- If logged out, enter user-assisted login branch, then continue automatically after login is detected
 
 ### Fallback
-- If booking fails:
-  - return alternatives
-  - provide handoff link
+- If booking cannot complete autonomously:
+  - return `requires_user_action` with actionable reason/prompt/resume token
+  - return alternatives and/or handoff link when appropriate
 
 ### CAPTCHA Handling
+- CAPTCHA and forced verification are exception paths
 - Pause execution
-- Prompt user to complete
-- Resume flow
+- Prompt user to complete required action
+- Resume flow with preserved context
+
+### Failure / User-Action Reasons
+- `login_required`
+- `login_refresh_required`
+- `captcha_required`
+- `checkout_opened`
+- `sms_verification_required` (rare fallback when provider still forces verification despite login)
 
 ---
 
@@ -129,6 +152,7 @@ Coordinates:
 - Prefer deterministic logic
 - Avoid complex infrastructure
 - No reliance on anti-bot evasion as a core dependency
+- Do not capture or store user credentials; persist only local browser session artifacts
 
 ---
 

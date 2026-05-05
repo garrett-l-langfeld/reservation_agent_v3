@@ -6,6 +6,10 @@ from typing import Any
 
 class PlatformAdapter(ABC):
     @abstractmethod
+    def ensure_authenticated(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     def resolve_restaurant(self, restaurant_name: str, location: str) -> dict[str, Any]:
         raise NotImplementedError
 

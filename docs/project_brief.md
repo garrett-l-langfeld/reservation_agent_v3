@@ -33,12 +33,15 @@ Build a simple, modular reservation agent that takes structured input and attemp
 - Availability lookup
 - Slot selection
 - Booking attempt (best-effort, required)
-- CAPTCHA/verification handling via user-assisted pause and resume
+- Login-first flow with persisted local session reuse across runs
+- CAPTCHA/verification handling via user-assisted pause and resume as fallback
 - Fallback to alternatives + handoff when booking fails
 
 ## Non-Goals (MVP)
 - Multi-platform support
 - Phone reservations
+- Multi-account management
+- Credential storage/management
 - Payment handling
 - Preference learning
 - Background monitoring

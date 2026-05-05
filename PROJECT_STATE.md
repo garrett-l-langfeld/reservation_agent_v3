@@ -25,7 +25,7 @@ Phase 10 — Testing (Completed)
 ---
 
 ## Next Task
-Prepare for production hardening of real browser automation and anti-bot resilience (CLI entrypoint now available for local end-to-end runs)
+Implement auth preflight before restaurant search for real Resy runs: check login first, click `Log In` when needed, wait for user login, then continue with restaurant resolution/availability using persisted session state.
 
 ---
 
@@ -41,14 +41,16 @@ Prepare for production hardening of real browser automation and anti-bot resilie
 - Autobooking: YES (best-effort)
 - Fallback: YES (handoff)
 - CAPTCHA: user-assisted
+- Session persistence: YES (reuse authenticated local browser session across runs)
 - Required booking info: user name, email, and phone
 - Added minimal CLI for orchestrator execution via `src/main.py` with `--request-json` or `--request-file`
 
 ---
 
 ## Open Questions
-- How should CAPTCHA UX work? (CLI pause vs browser handoff)
-- Retry strategy for failed bookings?
+- Session TTL/expiry handling strategy for `login_refresh_required`
+- How to validate profile/session artifact hygiene over long-running local usage
+- Most reliable login-detection signals across Resy page variants before search begins
 
 ---
 

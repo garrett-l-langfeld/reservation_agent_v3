@@ -53,12 +53,13 @@ def test_run_cli_rejects_invalid_request_json(capsys):
 
 
 def test_run_cli_supports_real_adapter_via_factory(monkeypatch, capsys):
-    created: dict[str, int | bool] = {}
+    created: dict[str, int | bool | str] = {}
 
-    def fake_create_real_adapter(*, headless: bool, timeout_ms: int):
+    def fake_create_real_adapter(*, headless: bool, timeout_ms: int, session_profile_dir: str):
         created["called"] = True
         created["headless"] = headless
         created["timeout_ms"] = timeout_ms
+        created["session_profile_dir"] = session_profile_dir
         return MockResyAdapter()
 
     monkeypatch.setattr("src.main._create_real_adapter", fake_create_real_adapter)
@@ -79,7 +80,12 @@ def test_run_cli_supports_real_adapter_via_factory(monkeypatch, capsys):
 
     assert exit_code == 0
     assert response["status"] == "success"
-    assert created == {"called": True, "headless": True, "timeout_ms": 1234}
+    assert created == {
+        "called": True,
+        "headless": True,
+        "timeout_ms": 1234,
+        "session_profile_dir": ".resy_profile",
+    }
 
 
 def test_run_with_real_adapter_closes_client(monkeypatch):
@@ -93,8 +99,8 @@ def test_run_with_real_adapter_closes_client(monkeypatch):
         def __init__(self):
             self.client = FakeClient()
 
-    def fake_create_real_adapter(*, headless: bool, timeout_ms: int):
-        _ = (headless, timeout_ms)
+    def fake_create_real_adapter(*, headless: bool, timeout_ms: int, session_profile_dir: str):
+        _ = (headless, timeout_ms, session_profile_dir)
         return FakeAdapter()
 
     monkeypatch.setattr("src.main._create_real_adapter", fake_create_real_adapter)

@@ -92,6 +92,38 @@ Implement ranking logic:
 
 ---
 
+## Phase 11 — Authenticated Session Hardening
+
+### Task 11.1
+Add auth preflight before restaurant search:
+- check login state immediately after opening Resy
+- if logged out, click `Log In` and pause for user-assisted login
+- continue to restaurant resolution only after authenticated session is detected
+
+### Task 11.2
+Persist browser session across runs:
+- reuse local browser profile/session artifacts
+- keep user logged in across multiple reservations when valid
+
+### Task 11.3
+Add session health checks:
+- pre-search auth check
+- pre-booking auth check
+- pre-submit auth check
+- return `login_refresh_required` when session expires
+
+### Task 11.4
+Harden checkout modal continuation:
+- detect and click `Reserve Now`
+- support iframe/modal contexts
+
+### Task 11.5
+Exception-only user action flow:
+- forced re-auth/CAPTCHA/SMS as fallback only
+- preserve resumable flow and prompt messaging
+
+---
+
 ## Phase 7 — Orchestrator
 
 ### Task 7.1
@@ -118,6 +150,7 @@ Handle CAPTCHA:
 - pause execution
 - prompt user
 - resume
+- keep this as fallback, not primary happy path
 
 ### Task 8.3
 Fallback behavior:
@@ -154,6 +187,7 @@ Test scenarios:
 - End-to-end flow works
 - Booking succeeds in common cases
 - Failures are handled cleanly
+- Repeat bookings succeed without repeated login when session is valid
 
 ---
 
@@ -172,3 +206,8 @@ Test scenarios:
 - Task 8.3: completed
 - Task 9.1: completed
 - Task 10.1: completed
+- Task 11.1: pending
+- Task 11.2: pending
+- Task 11.3: pending
+- Task 11.4: pending
+- Task 11.5: pending

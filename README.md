@@ -1,63 +1,161 @@
-# Codex-Optimized Side Project Starter
+# Reservation Agent (Resy)
 
-A small starter template for using OpenAI Codex effectively on side projects while keeping token usage under control.
+A Python CLI that automates restaurant reservation attempts through Resy using a real browser flow, with support for login preflight, persistent sessions, and structured JSON results.
 
-## Goals
+## What This Project Does
 
-- Keep project context small and stable
-- Make Codex prompts shorter and more reliable
-- Encourage safe, incremental edits
-- Reduce repeated explanations across threads
+- Normalizes and validates reservation requests
+- Resolves restaurants and checks availability
+- Selects the best slot for the requested time
+- Runs booking flow in a real browser (`Playwright`) when using `--adapter real`
+- Supports user-action handoffs for login/CAPTCHA/checkout steps
+- Returns machine-readable JSON status for every run
 
-## Project layout
+## Current Scope
+
+- Primary platform: **Resy**
+- Primary execution mode for live bookings: **headed browser**
+- Session reuse: persistent browser profile directory (no credential storage in code)
+
+## Requirements
+
+- Python 3.11+
+- `pip`
+- Playwright browser dependencies
+
+## Setup
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+.venv/bin/python -m playwright install
+```
+
+## Run Tests
+
+```bash
+.venv/bin/python -m pytest
+```
+
+## CLI Usage
+
+```bash
+.venv/bin/python -m src.main [OPTIONS]
+```
+
+### Required request input (choose one)
+
+- `--request-json '{...}'`
+- `--request-file /path/to/request.json`
+
+### Important options
+
+- `--adapter {mock,real}` (default: `mock`)
+- `--headed` (recommended for real flow)
+- `--timeout-ms 20000` (per Playwright operation)
+- `--session-profile-dir .resy_profile` (persistent session state)
+- `--reference-date YYYY-MM-DD` (deterministic parsing/testing)
+
+## Example: Real Headed Run
+
+```bash
+.venv/bin/python -m src.main --adapter real --headed --session-profile-dir .resy_profile --request-json '{"restaurant_name":"Poesia Osteria Italiana","location":"San Francisco, CA","date":"2026-05-13","time":"6:30 PM","party_size":2,"user_name":"Garrett Langfeld","user_email":"glangfeld@comcast.net","user_phone":"510-479-5427"}'
+```
+
+## Request Shape
+
+```json
+{
+  "restaurant_name": "The Stinking Rose",
+  "location": "San Francisco, CA",
+  "date": "2026-05-12",
+  "time": "6:30 PM",
+  "party_size": 2,
+  "user_name": "Your Name",
+  "user_email": "you@example.com",
+  "user_phone": "555-555-5555"
+}
+```
+
+## Response Shape (High Level)
+
+### Success
+
+```json
+{
+  "status": "success",
+  "restaurant": "...",
+  "time": "6:30 PM",
+  "party_size": 2,
+  "confirmation_status": "confirmed",
+  "confirmation_details": "..."
+}
+```
+
+### Requires User Action
+
+```json
+{
+  "status": "requires_user_action",
+  "reason": "login_required",
+  "prompt": "...",
+  "resume_token": "...",
+  "booking_debug": {}
+}
+```
+
+Common `reason` values include:
+
+- `login_required`
+- `login_refresh_required`
+- `captcha_required`
+- `checkout_opened`
+- `sms_verification_required` (fallback path)
+
+### Failure
+
+```json
+{
+  "status": "failure",
+  "reason": "restaurant_not_found"
+}
+```
+
+## Real Browser Flow Notes
+
+- The real adapter checks auth preflight before restaurant search.
+- If a login CTA is present, it enters login flow.
+- If no login CTA is present, it proceeds assuming active login session.
+- After slot selection, the flow attempts modal actions (for example `Reserve Now` and `Confirm`) including iframe contexts.
+- On a `Reservation Booked` confirmation screen, the run should stop and return success.
+
+## Session Persistence
+
+Use `--session-profile-dir` to keep browser session state across runs.
+
+- First run may require manual login
+- Later runs can reuse session if still valid
+- If session expires, you may receive `login_refresh_required`
+
+## Project Structure
 
 ```text
 .
 ├── AGENTS.md
-├── README.md
 ├── PROJECT_STATE.md
 ├── TASKS.md
-├── PROMPTS.md
-├── .gitignore
-├── .env.example
-├── .vscode/
-│   └── settings.json
 ├── docs/
-│   └── architecture.md
 ├── src/
-│   └── main.py
 └── tests/
-    └── test_smoke.py
 ```
 
-## How to use this with Codex
+## Safety and Responsibility
 
-1. Open this repo in the Codex app or your IDE with Codex enabled.
-2. Start by asking Codex to read only:
-   - `README.md`
-   - `AGENTS.md`
-   - `PROJECT_STATE.md`
-   - the one file you want changed
-3. Use small tasks:
-   - “Plan only. No code yet.”
-   - “Modify only `src/main.py`.”
-   - “Show a minimal diff and explain the change.”
-4. Before bigger tasks, commit a checkpoint:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial Codex starter"
-   ```
-5. After each successful milestone, update `PROJECT_STATE.md`.
+- Respect website terms and applicable laws.
+- Do not commit personal data or secrets.
+- Treat live booking automation as best effort; always review final confirmation.
 
-## Recommended workflow
+## License
 
-- **Step 1:** Ask for a plan
-- **Step 2:** Approve one step
-- **Step 3:** Ask for tests or validation
-- **Step 4:** Commit
-- **Step 5:** Start a fresh thread for the next task if context is getting noisy
-
-## Example prompts
-
-See `PROMPTS.md` for copy/paste examples.
+Add your preferred license (for example MIT) before publishing publicly.

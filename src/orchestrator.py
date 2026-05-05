@@ -37,6 +37,46 @@ def process_reservation_request(
         }
 
     try:
+        auth_result = adapter.ensure_authenticated()
+        if auth_result.get("status") == "captcha_required":
+            LOGGER.info("auth_preflight_captcha_required")
+            return {
+                "status": "requires_user_action",
+                "reason": "captcha_required",
+                "prompt": auth_result.get(
+                    "prompt", "Complete CAPTCHA in browser and continue."
+                ),
+                "resume_token": auth_result.get("resume_token"),
+                "booking_debug": auth_result.get("debug"),
+                "alternative_times": [],
+                "handoff_link": None,
+            }
+        if auth_result.get("status") == "user_action_required":
+            LOGGER.info("auth_preflight_user_action_required")
+            reason = auth_result.get("reason")
+            if not isinstance(reason, str):
+                reason = "login_required"
+            return {
+                "status": "requires_user_action",
+                "reason": reason,
+                "prompt": auth_result.get(
+                    "prompt", "Complete required browser action and continue."
+                ),
+                "resume_token": auth_result.get("resume_token"),
+                "booking_debug": auth_result.get("debug"),
+                "alternative_times": [],
+                "handoff_link": None,
+            }
+        if auth_result.get("status") == "failure":
+            LOGGER.info("auth_preflight_failed")
+            return {
+                "status": "failure",
+                "reason": auth_result.get("reason", "authentication_failed"),
+                "booking_debug": auth_result.get("debug"),
+                "alternative_times": [],
+                "handoff_link": None,
+            }
+
         resolution = adapter.resolve_restaurant(
             normalized_request["restaurant_name"],
             normalized_request["location"],
@@ -150,9 +190,12 @@ def process_reservation_request(
 
         if booking_result.get("status") == "user_action_required":
             LOGGER.info("fallback_checkout_user_action_required")
+            reason = booking_result.get("reason")
+            if not isinstance(reason, str):
+                reason = "checkout_opened"
             return {
                 "status": "requires_user_action",
-                "reason": "checkout_opened",
+                "reason": reason,
                 "prompt": booking_result.get(
                     "prompt", "Complete checkout details in browser and resume"
                 ),

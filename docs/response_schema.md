@@ -26,6 +26,22 @@ _Task 2.2 output_
 }
 ```
 
+## Requires User Action Response
+
+```json
+{
+  "status": "requires_user_action",
+  "reason": "login_required|login_refresh_required|captcha_required|checkout_opened|sms_verification_required",
+  "prompt": "string",
+  "resume_token": "string|null",
+  "booking_debug": "object|null"
+}
+```
+
+### Notes
+- `sms_verification_required` is a rare fallback and may still occur even when a logged-in session exists.
+- `resume_token` is present when the flow can continue from the current browser/session context.
+
 ## No Availability Response
 
 ```json
