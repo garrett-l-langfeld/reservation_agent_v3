@@ -1,41 +1,61 @@
-# Project State
+# Reservation Agent — Project State
 
-Update this file after each meaningful milestone so new Codex threads can start with a short, stable summary.
+## Current Status
+IN PROGRESS (MVP CORE COMPLETE)
 
-## Project summary
+---
 
-Replace this text with a 3-5 sentence overview of your project.
+## Current Phase
+Phase 10 — Testing (Completed)
 
-## Current stack
+---
 
-- Language:
-- Framework:
-- Package manager:
-- Test command:
-- Run command:
+## Completed Phases
+- Phase 1 — Project Definition
+- Phase 2 — Input / Output Contract
+- Phase 3 — Platform Adapter Interface
+- Phase 4 — Mock Adapter
+- Phase 5 — Validation
+- Phase 6 — Slot Selection
+- Phase 7 — Orchestrator
+- Phase 8 — Resy Integration
+- Phase 9 — Logging
+- Phase 10 — Testing
 
-## Current status
+---
 
-- What is working:
-- What is partially working:
-- What is blocked:
+## Next Task
+Implement auth preflight before restaurant search for real Resy runs: check login first, click `Log In` when needed, wait for user login, then continue with restaurant resolution/availability using persisted session state.
 
-## Current priorities
+---
 
-1. 
-2. 
-3. 
+## Known Risks
+- Resy anti-bot / CAPTCHA
+- Booking flow fragility
+- UI changes
 
-## Known constraints
+---
 
-- Keep setup simple
-- Favor low-maintenance solutions
-- Minimize dependencies unless necessary
+## Key Decisions
+- Platform: Resy
+- Autobooking: YES (best-effort)
+- Fallback: YES (handoff)
+- CAPTCHA: user-assisted
+- Session persistence: YES (reuse authenticated local browser session across runs)
+- Required booking info: user name, email, and phone
+- Added minimal CLI for orchestrator execution via `src/main.py` with `--request-json` or `--request-file`
 
-## Decisions made
+---
 
-- Example: We are using a simple file-based store before adding a database.
+## Open Questions
+- Session TTL/expiry handling strategy for `login_refresh_required`
+- How to validate profile/session artifact hygiene over long-running local usage
+- Most reliable login-detection signals across Resy page variants before search begins
 
-## Next recommended prompt for Codex
+---
 
-“Read `README.md`, `AGENTS.md`, and `PROJECT_STATE.md`. Then help me with [one specific task]. Do not modify unrelated files.”
+## Notes for Codex
+- Do not expand scope
+- Do not introduce heavy frameworks
+- Keep everything modular and simple
+- Ask for clarification if uncertain
